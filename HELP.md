@@ -17,7 +17,27 @@ The `scenarios.yaml` file is the primary configuration point for the framework.
 
 ---
 
-## 2. Distributed Load Testing (Slaves Setup)
+## 2. Batch Parsing Configuration (Large Result Files)
+
+For high-load tests generating millions of rows, the result parser reads the file in chunks instead of loading everything into memory.
+
+| Parameter | Description | Default |
+| :--- | :--- | :--- |
+| `batch_size` | Rows processed per iteration. Lower = less memory per cycle. | `10 000` |
+| `reservoir_size` | Max samples kept for P95/P99 estimation via reservoir sampling. | `100 000` |
+
+Configure via code in `main.py` or per-scenario in YAML (future enhancement):
+```python
+# Example: custom batch and reservoir sizes
+parser = ResultsParser(result_file, batch_size=20_000, reservoir_size=200_000)
+```
+
+> **Note on percentile accuracy**: Reservoir sampling (Vitter's Algorithm R) provides
+> statistically accurate P95/P99 are within ~1% of exact values for files with 1M+ rows.
+
+---
+
+## 3. Distributed Load Testing (Slaves Setup)
 
 To run tests across multiple machines, you must configure JMeter slaves.
 
