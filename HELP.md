@@ -11,6 +11,7 @@ The `scenarios.yaml` file is the primary configuration point for the framework.
 | `name` | Unique name for the test scenario. Used for file naming and reports. |
 | `jmx_path` | Relative path to the `.jmx` file (e.g., `scenarios/login.jmx`). |
 | `load_steps` | A list of user counts to execute sequentially (e.g., `[500, 1000, 2000]`). |
+| `rampup` | Ramp-up time in **seconds** before all threads are active. Injected as `-Jrampup`. Default: `60`. |
 | `sla.p95` | The 95th percentile response time threshold (in milliseconds). Tests stop if breached. |
 | `sla.error_threshold` | The percentage of failed requests allowed before stopping (e.g., `50`). |
 
@@ -56,7 +57,8 @@ For the automated load escalation to work, your JMX files MUST use a property fo
 1.  Open your JMX in JMeter GUI.
 2.  Locate your **Thread Group**.
 3.  Set **Number of Threads (users)** to `${__P(users, 1)}`.
-4.  This allows the orchestrator to inject the load dynamically via the `-Jusers` flag.
+4.  Set **Ramp-Up (seconds)** to `${__P(rampup, 60)}`.
+5.  This allows the orchestrator to inject both values dynamically via `-Jusers` and `-Jrampup` flags.
 
 ---
 

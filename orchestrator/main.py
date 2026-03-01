@@ -54,6 +54,7 @@ def run_scenario(scenario_cfg: dict, runner: JMeterRunner) -> ScenarioResult:
     name = scenario_cfg["name"]
     jmx_path = scenario_cfg["jmx_path"]
     load_steps: list[int] = scenario_cfg["load_steps"]
+    rampup: int = scenario_cfg.get("rampup", 60)   # seconds; default 60
     sla_p95: float = scenario_cfg["sla"]["p95"]
     error_threshold: float = scenario_cfg["sla"]["error_threshold"]
 
@@ -66,7 +67,7 @@ def run_scenario(scenario_cfg: dict, runner: JMeterRunner) -> ScenarioResult:
     for users in load_steps:
         logger.info("--- Load step: %d users ---", users)
 
-        run = _execute_step(name, jmx_path, users, runner, engine)
+        run = _execute_step(name, jmx_path, users, rampup, runner, engine)
         result.runs.append(run)
 
         logger.info(
@@ -88,6 +89,7 @@ def _execute_step(
     name: str,
     jmx_path: str,
     users: int,
+    rampup: int,
     runner: JMeterRunner,
     engine: DecisionEngine,
 ) -> RunResult:
@@ -95,7 +97,7 @@ def _execute_step(
     timestamp = int(time.time())
     result_file = f"results/{name}_{users}_{timestamp}.csv"
 
-    runner.run(jmx_path, result_file, users)
+    runner.run(jmx_path, result_file, users, rampup=rampup)
 
     metrics: Metrics | None = None
     if Path(result_file).exists():
