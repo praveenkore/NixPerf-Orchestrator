@@ -13,19 +13,21 @@ from pathlib import Path
 
 import yaml
 
+from orchestrator.config_validator import ConfigValidationError, validate_config
 from orchestrator.decision_engine import Decision, DecisionEngine
 from orchestrator.jmeter_runner import JMeterRunner
 from orchestrator.models import Metrics, RunResult, ScenarioResult
 from orchestrator.parser import ResultsParser
+from orchestrator.preflight import PreflightError, run_preflight_checks
 from orchestrator.reporting import Reporter
 
 # ---------------------------------------------------------------------------
-# Logging setup
+# Logging setup  (Item 8: structured logging with timestamps and levels)
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
+    format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
@@ -54,34 +56,43 @@ def run_scenario(scenario_cfg: dict, runner: JMeterRunner) -> ScenarioResult:
     name = scenario_cfg["name"]
     jmx_path = scenario_cfg["jmx_path"]
     load_steps: list[int] = scenario_cfg["load_steps"]
-    rampup: int = scenario_cfg.get("rampup", 60)   # seconds; default 60
+    rampup: int = scenario_cfg.get("rampup", 60)
     sla_p95: float = scenario_cfg["sla"]["p95"]
     error_threshold: float = scenario_cfg["sla"]["error_threshold"]
+    retry_count: int = scenario_cfg.get("retry_count", 1)
+    timeout: int = scenario_cfg.get("timeout_seconds", 7200)
+    mode: str = scenario_cfg.get("mode", "static")
 
-    engine = DecisionEngine(sla_p95=sla_p95, error_threshold_percent=error_threshold)
+    engine = DecisionEngine(
+        sla_p95=sla_p95,
+        error_threshold_percent=error_threshold,
+        mode=mode,
+    )
     result = ScenarioResult(name=name)
 
     logger.info("=" * 60)
-    logger.info("Starting scenario: %s", name)
+    logger.info("SCENARIO START: %s (mode=%s, retry=%d, timeout=%ds)", name, mode, retry_count, timeout)
 
     for users in load_steps:
         logger.info("--- Load step: %d users ---", users)
 
-        run = _execute_step(name, jmx_path, users, rampup, runner, engine)
+        run = _execute_step(name, jmx_path, users, rampup, runner, engine, retry_count, timeout)
         result.runs.append(run)
 
-        logger.info(
-            "Decision: %s — %s | Error=%.2f%% P95=%.0fms",
-            run.decision, run.reason,
-            run.metrics.error_percent if run.metrics else 0,
-            run.metrics.p95 if run.metrics else 0,
-        )
+        if run.metrics:
+            logger.info(
+                "Decision: %s | Error=%.2f%% | P95=%.0fms | Reason: %s",
+                run.decision, run.metrics.error_percent, run.metrics.p95, run.reason,
+            )
+        else:
+            logger.warning("Decision: %s | Reason: %s", run.decision, run.reason)
 
         if run.decision == Decision.STOP:
             result.breakpoint_users = users
-            logger.warning("Stopping scenario '%s' at %d users.", name, users)
+            logger.warning("⚠ BREAKPOINT: Scenario '%s' stopped at %d users.", name, users)
             break
 
+    logger.info("SCENARIO END: %s — breakpoint=%s", name, result.breakpoint_users or "none")
     return result
 
 
@@ -92,12 +103,19 @@ def _execute_step(
     rampup: int,
     runner: JMeterRunner,
     engine: DecisionEngine,
+    retry_count: int,
+    timeout: int,
 ) -> RunResult:
     """Run one load step: execute JMeter, parse results, evaluate."""
     timestamp = int(time.time())
     result_file = f"results/{name}_{users}_{timestamp}.csv"
 
-    runner.run(jmx_path, result_file, users, rampup=rampup)
+    success, output = runner.run(
+        jmx_path, result_file, users,
+        rampup=rampup,
+        timeout=timeout,
+        retry_count=retry_count,
+    )
 
     metrics: Metrics | None = None
     if Path(result_file).exists():
@@ -127,18 +145,42 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CONFIG,
         help=f"Path to scenarios YAML (default: {DEFAULT_CONFIG})",
     )
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip pre-flight connectivity checks",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.config)
-    runner = JMeterRunner()
 
+    # Step 1: Load and validate config
+    config = load_config(args.config)
+    try:
+        validate_config(config)
+    except ConfigValidationError as exc:
+        logger.error("Config validation failed: %s", exc)
+        sys.exit(1)
+
+    # Step 2: Pre-flight checks
+    if not args.skip_preflight:
+        try:
+            run_preflight_checks(config["scenarios"])
+        except PreflightError as exc:
+            logger.error("Pre-flight check failed: %s", exc)
+            sys.exit(1)
+    else:
+        logger.info("Pre-flight checks skipped (--skip-preflight)")
+
+    # Step 3: Run all scenarios
+    runner = JMeterRunner()
     scenario_results: list[ScenarioResult] = [
         run_scenario(cfg, runner) for cfg in config["scenarios"]
     ]
 
+    # Step 4: Generate reports
     _write_reports(scenario_results)
     logger.info("Performance testing complete. Reports saved to reports/")
 

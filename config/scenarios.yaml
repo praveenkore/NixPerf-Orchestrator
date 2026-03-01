@@ -2,7 +2,10 @@ scenarios:
   - name: login_test
     jmx_path: scenarios/login.jmx
     load_steps: [500, 1000, 2000, 5000, 10000, 15000]
-    rampup: 60              # seconds — passed as -Jrampup to JMeter
+    rampup: 60              # seconds — injected as -Jrampup
+    retry_count: 1          # retry once on JMeter failure
+    timeout_seconds: 7200   # kill JMeter if it runs longer than 2 hours
+    mode: static            # static | adaptive (Phase 2)
     sla:
-      p95: 2000
-      error_threshold: 50
+      p95: 2000             # milliseconds
+      error_threshold: 50   # percent

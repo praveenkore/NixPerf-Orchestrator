@@ -1,14 +1,18 @@
 """orchestrator package — NixPerf Orchestrator"""
 from orchestrator.models import Metrics, RunResult, ScenarioResult
 from orchestrator.parser import ResultsParser
-from orchestrator.decision_engine import DecisionEngine, Decision
+from orchestrator.decision_engine import DecisionEngine, Decision, EscalationMode
 from orchestrator.jmeter_runner import JMeterRunner
 from orchestrator.reporting import Reporter
+from orchestrator.preflight import run_preflight_checks, PreflightError
+from orchestrator.config_validator import validate_config, ConfigValidationError
 
 __all__ = [
     "Metrics", "RunResult", "ScenarioResult",
     "ResultsParser",
-    "DecisionEngine", "Decision",
+    "DecisionEngine", "Decision", "EscalationMode",
     "JMeterRunner",
     "Reporter",
+    "run_preflight_checks", "PreflightError",
+    "validate_config", "ConfigValidationError",
 ]
