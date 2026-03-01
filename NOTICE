@@ -1,0 +1,21 @@
+NixPerf-Orchestrator™
+Copyright © 2026 Nixsoft Technologies Pvt. Ltd.
+
+This product includes software developed at
+Nixsoft Technologies Pvt. Ltd. (https://www.nixsoft.com/).
+
+Third-Party Acknowledgements:
+-----------------------------
+* Apache JMeter: This project integrates with Apache JMeter, which is 
+  licensed under the Apache License 2.0. 
+  (https://jmeter.apache.org/)
+
+* PyYAML: This project uses PyYAML, which is licensed under the 
+  MIT License.
+  (https://pyyaml.org/)
+
+Trademark Statement:
+--------------------
+NixPerf-Orchestrator™ is a trademark of Nixsoft Technologies Pvt. Ltd.
+The Apache License does not grant rights to use this trademark.
+All other trademarks are the property of their respective owners.
