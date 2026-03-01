@@ -20,3 +20,6 @@ venv/
 .venv/
 env/
 .env/
+
+# Sample data
+sample-csv/
