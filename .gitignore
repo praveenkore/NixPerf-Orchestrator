@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# JMeter Results & Reports
+results/
+reports/
+
+# Specific files requested to be ignored
+ideation.txt
+requirement.md
+
+# Virtual Environment
+venv/
+.venv/
+env/
+.env/
