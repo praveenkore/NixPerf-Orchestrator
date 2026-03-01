@@ -19,6 +19,7 @@ from orchestrator.jmeter_runner import JMeterRunner
 from orchestrator.models import Metrics, RunResult, ScenarioResult
 from orchestrator.parser import ResultsParser
 from orchestrator.preflight import PreflightError, run_preflight_checks
+from orchestrator.ramp_engine import calculate_rampup, get_default_ramp_strategy
 from orchestrator.reporting import Reporter
 
 # ---------------------------------------------------------------------------
@@ -56,12 +57,17 @@ def run_scenario(scenario_cfg: dict, runner: JMeterRunner) -> ScenarioResult:
     name = scenario_cfg["name"]
     jmx_path = scenario_cfg["jmx_path"]
     load_steps: list[int] = scenario_cfg["load_steps"]
-    rampup: int = scenario_cfg.get("rampup", 60)
     sla_p95: float = scenario_cfg["sla"]["p95"]
     error_threshold: float = scenario_cfg["sla"]["error_threshold"]
     retry_count: int = scenario_cfg.get("retry_count", 1)
     timeout: int = scenario_cfg.get("timeout_seconds", 7200)
     mode: str = scenario_cfg.get("mode", "static")
+
+    # Resolve ramp strategy (backward compatible)
+    ramp_config: dict = scenario_cfg.get(
+        "ramp_strategy",
+        get_default_ramp_strategy(load_steps[0]) if load_steps else {"type": "fixed", "value": 60},
+    )
 
     engine = DecisionEngine(
         sla_p95=sla_p95,
@@ -71,10 +77,18 @@ def run_scenario(scenario_cfg: dict, runner: JMeterRunner) -> ScenarioResult:
     result = ScenarioResult(name=name)
 
     logger.info("=" * 60)
-    logger.info("SCENARIO START: %s (mode=%s, retry=%d, timeout=%ds)", name, mode, retry_count, timeout)
+    logger.info(
+        "SCENARIO START: %s (mode=%s, ramp=%s, retry=%d, timeout=%ds)",
+        name, mode, ramp_config.get("type"), retry_count, timeout,
+    )
 
     for users in load_steps:
-        logger.info("--- Load step: %d users ---", users)
+        # Dynamic ramp-up calculation
+        rampup = calculate_rampup(users, ramp_config)
+        logger.info(
+            "Executing scenario %s | Users=%d | RampUp=%ds",
+            name, users, rampup,
+        )
 
         run = _execute_step(name, jmx_path, users, rampup, runner, engine, retry_count, timeout)
         result.runs.append(run)

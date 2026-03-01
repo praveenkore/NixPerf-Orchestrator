@@ -84,7 +84,12 @@ def _validate_scenario(scenario: dict, idx: int) -> None:
         )
 
     # Optional fields validation
-    if "rampup" in scenario:
+
+    # ramp_strategy validation
+    if "ramp_strategy" in scenario:
+        _validate_ramp_strategy(scenario["ramp_strategy"], prefix)
+    elif "rampup" in scenario:
+        # Legacy static rampup — still accepted for backward compat
         rampup = scenario["rampup"]
         if not isinstance(rampup, (int, float)) or rampup <= 0:
             raise ConfigValidationError(
@@ -104,3 +109,40 @@ def _validate_scenario(scenario: dict, idx: int) -> None:
             raise ConfigValidationError(
                 f"{prefix}: timeout_seconds must be positive, got {ts}"
             )
+
+
+def _validate_ramp_strategy(ramp: dict, prefix: str) -> None:
+    """Validate the ramp_strategy block."""
+    if not isinstance(ramp, dict):
+        raise ConfigValidationError(f"{prefix}: ramp_strategy must be a dictionary")
+
+    strategy_type = ramp.get("type")
+    if not strategy_type:
+        raise ConfigValidationError(f"{prefix}: ramp_strategy.type is required")
+
+    valid_types = ("constant_arrival", "fixed", "proportional")
+    if strategy_type not in valid_types:
+        raise ConfigValidationError(
+            f"{prefix}: ramp_strategy.type must be one of {valid_types}, got '{strategy_type}'"
+        )
+
+    if strategy_type == "constant_arrival":
+        _validate_positive(ramp, "arrival_rate", prefix)
+
+    elif strategy_type == "fixed":
+        _validate_positive(ramp, "value", prefix)
+
+    elif strategy_type == "proportional":
+        _validate_positive(ramp, "base_users", prefix)
+        _validate_positive(ramp, "base_ramp", prefix)
+
+
+def _validate_positive(config: dict, field: str, prefix: str) -> None:
+    """Validate that a field exists and is a positive number."""
+    val = config.get(field)
+    if val is None:
+        raise ConfigValidationError(f"{prefix}: ramp_strategy.{field} is required")
+    if not isinstance(val, (int, float)) or val <= 0:
+        raise ConfigValidationError(
+            f"{prefix}: ramp_strategy.{field} must be > 0, got {val}"
+        )

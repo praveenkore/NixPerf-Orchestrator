@@ -6,6 +6,7 @@ from orchestrator.jmeter_runner import JMeterRunner
 from orchestrator.reporting import Reporter
 from orchestrator.preflight import run_preflight_checks, PreflightError
 from orchestrator.config_validator import validate_config, ConfigValidationError
+from orchestrator.ramp_engine import calculate_rampup, get_default_ramp_strategy
 
 __all__ = [
     "Metrics", "RunResult", "ScenarioResult",
@@ -15,4 +16,5 @@ __all__ = [
     "Reporter",
     "run_preflight_checks", "PreflightError",
     "validate_config", "ConfigValidationError",
+    "calculate_rampup", "get_default_ramp_strategy",
 ]
