@@ -1,84 +1,145 @@
-import yaml
-import os
+"""
+main.py - Entry point for the NixPerf Orchestrator.
+
+Usage:
+    python -m orchestrator.main
+    python -m orchestrator.main --config path/to/scenarios.yaml
+"""
+import argparse
+import logging
+import sys
 import time
+from pathlib import Path
+
+import yaml
+
+from orchestrator.decision_engine import Decision, DecisionEngine
 from orchestrator.jmeter_runner import JMeterRunner
+from orchestrator.models import Metrics, RunResult, ScenarioResult
 from orchestrator.parser import ResultsParser
-from orchestrator.decision_engine import DecisionEngine
 from orchestrator.reporting import Reporter
 
-def load_config(config_path):
-    with open(config_path, 'r') as f:
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+DEFAULT_CONFIG = "config/scenarios.yaml"
+
+
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+def load_config(config_path: str) -> dict:
+    path = Path(config_path)
+    if not path.exists():
+        logger.error("Config file not found: %s", config_path)
+        sys.exit(1)
+    with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def main():
-    config_path = "config/scenarios.yaml"
-    if not os.path.exists(config_path):
-        print(f"Config file not found: {config_path}")
-        return
 
-    config = load_config(config_path)
-    runner = JMeterRunner() # Assumes 'jmeter' is in PATH
-    
-    overall_results = []
+# ---------------------------------------------------------------------------
+# Core logic
+# ---------------------------------------------------------------------------
 
-    for scenario_cfg in config['scenarios']:
-        name = scenario_cfg['name']
-        jmx_path = scenario_cfg['jmx_path']
-        load_steps = scenario_cfg['load_steps']
-        sla_p95 = scenario_cfg['sla']['p95']
-        error_threshold = scenario_cfg['sla']['error_threshold']
+def run_scenario(scenario_cfg: dict, runner: JMeterRunner) -> ScenarioResult:
+    """Execute all load steps for a single scenario and return its result."""
+    name = scenario_cfg["name"]
+    jmx_path = scenario_cfg["jmx_path"]
+    load_steps: list[int] = scenario_cfg["load_steps"]
+    sla_p95: float = scenario_cfg["sla"]["p95"]
+    error_threshold: float = scenario_cfg["sla"]["error_threshold"]
 
-        print(f"\n>>> Starting Scenario: {name}")
-        
-        scenario_results = {
-            "name": name,
-            "runs": [],
-            "breakpoint": None
-        }
+    engine = DecisionEngine(sla_p95=sla_p95, error_threshold_percent=error_threshold)
+    result = ScenarioResult(name=name)
 
-        engine = DecisionEngine(sla_p95, error_threshold)
+    logger.info("=" * 60)
+    logger.info("Starting scenario: %s", name)
 
-        for users in load_steps:
-            print(f"--- Running with {users} users ---")
-            
-            result_file = f"results/{name}_{users}_{int(time.time())}.csv"
-            
-            # Step 1: Run JMeter
-            success, output = runner.run(jmx_path, result_file, users)
-            
-            # Step 2: Parse results
-            metrics = None
-            if os.path.exists(result_file):
-                parser = ResultsParser(result_file)
-                metrics = parser.parse()
-            
-            # Step 3: Evaluate
-            decision, reason = engine.evaluate(metrics)
-            
-            run_info = {
-                "users": users,
-                "metrics": metrics if metrics else {"error_percent": 0, "p95": 0, "avg_response_time": 0},
-                "decision": decision,
-                "reason": reason
-            }
-            scenario_results["runs"].append(run_info)
+    for users in load_steps:
+        logger.info("--- Load step: %d users ---", users)
 
-            print(f"Result: {decision} - {reason}")
-            if metrics:
-                print(f"Metrics: Error={metrics['error_percent']:.2f}%, P95={metrics['p95']:.2f}ms")
+        run = _execute_step(name, jmx_path, users, runner, engine)
+        result.runs.append(run)
 
-            if decision == "STOP":
-                scenario_results["breakpoint"] = users
-                break
+        logger.info(
+            "Decision: %s — %s | Error=%.2f%% P95=%.0fms",
+            run.decision, run.reason,
+            run.metrics.error_percent if run.metrics else 0,
+            run.metrics.p95 if run.metrics else 0,
+        )
 
-        overall_results.append(scenario_results)
+        if run.decision == Decision.STOP:
+            result.breakpoint_users = users
+            logger.warning("Stopping scenario '%s' at %d users.", name, users)
+            break
 
-    # Generate Reports
+    return result
+
+
+def _execute_step(
+    name: str,
+    jmx_path: str,
+    users: int,
+    runner: JMeterRunner,
+    engine: DecisionEngine,
+) -> RunResult:
+    """Run one load step: execute JMeter, parse results, evaluate."""
     timestamp = int(time.time())
-    Reporter.generate_json_report(overall_results, f"reports/summary_{timestamp}.json")
-    Reporter.generate_html_summary(overall_results, f"reports/summary_{timestamp}.html")
+    result_file = f"results/{name}_{users}_{timestamp}.csv"
 
-    print("\n>>> Performance testing completed.")
+    runner.run(jmx_path, result_file, users)
+
+    metrics: Metrics | None = None
+    if Path(result_file).exists():
+        metrics = ResultsParser(result_file).parse()
+    else:
+        logger.warning("Result file not found after run: %s", result_file)
+
+    decision, reason = engine.evaluate(metrics)
+    return RunResult(users=users, metrics=metrics, decision=decision, reason=reason)
+
+
+def _write_reports(results: list[ScenarioResult]) -> None:
+    timestamp = int(time.time())
+    raw = [r.to_dict() for r in results]
+    Reporter.generate_json_report(raw, f"reports/summary_{timestamp}.json")
+    Reporter.generate_html_summary(raw, f"reports/summary_{timestamp}.html")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="NixPerf Orchestrator")
+    parser.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG,
+        help=f"Path to scenarios YAML (default: {DEFAULT_CONFIG})",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    config = load_config(args.config)
+    runner = JMeterRunner()
+
+    scenario_results: list[ScenarioResult] = [
+        run_scenario(cfg, runner) for cfg in config["scenarios"]
+    ]
+
+    _write_reports(scenario_results)
+    logger.info("Performance testing complete. Reports saved to reports/")
+
 
 if __name__ == "__main__":
     main()

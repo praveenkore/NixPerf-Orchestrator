@@ -1,56 +1,81 @@
+"""
+parser.py - Parses JMeter result files (CSV or JTL format) into Metrics.
+"""
 import csv
+import logging
 import statistics
-import os
+from pathlib import Path
+from typing import Optional
+
+from orchestrator.models import Metrics
+
+logger = logging.getLogger(__name__)
+
+_MIN_SAMPLES_FOR_PERCENTILES = 2
+
 
 class ResultsParser:
-    def __init__(self, file_path):
-        self.file_path = file_path
-        self.results = []
+    """Reads a JMeter result file and computes performance metrics.
 
-    def parse(self):
-        """
-        Parses JMeter result files (CSV or JTL) and calculates key metrics.
-        JMeter default CSV/JTL format:
-        timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
-        """
-        if not os.path.exists(self.file_path):
+    JMeter's default CSV/JTL columns expected:
+        timeStamp, elapsed, label, responseCode, responseMessage,
+        threadName, dataType, success, failureMessage, bytes, ...
+    """
+
+    def __init__(self, file_path: str) -> None:
+        self.file_path = Path(file_path)
+
+    def parse(self) -> Optional[Metrics]:
+        """Parse the result file and return a Metrics object, or None if empty."""
+        if not self.file_path.exists():
             raise FileNotFoundError(f"Result file not found: {self.file_path}")
 
-        elapsed_times = []
+        elapsed_times, error_count, total_count = self._read_rows()
+
+        if total_count == 0:
+            logger.warning("No valid rows found in %s", self.file_path)
+            return None
+
+        return Metrics(
+            total_requests=total_count,
+            error_count=error_count,
+            error_percent=(error_count / total_count) * 100,
+            avg_response_time=sum(elapsed_times) / total_count,
+            min_response_time=min(elapsed_times),
+            max_response_time=max(elapsed_times),
+            p95=self._percentile(elapsed_times, 95),
+            p99=self._percentile(elapsed_times, 99),
+        )
+
+    # --- Private helpers ---
+
+    def _read_rows(self) -> tuple[list[int], int, int]:
+        """Stream rows from the CSV file and accumulate raw counters."""
+        elapsed_times: list[int] = []
         error_count = 0
         total_count = 0
 
-        with open(self.file_path, mode='r', encoding='utf-8') as f:
-            # JMeter CSV can have header
+        with self.file_path.open(mode="r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 try:
-                    elapsed = int(row['elapsed'])
-                    success = row['success'].lower() == 'true'
-                    
-                    elapsed_times.append(elapsed)
-                    if not success:
-                        error_count += 1
-                    total_count += 1
+                    elapsed = int(row["elapsed"])
+                    is_success = row["success"].strip().lower() == "true"
                 except (ValueError, KeyError):
+                    logger.debug("Skipping malformed row: %s", row)
                     continue
 
-        if total_count == 0:
-            return None
+                elapsed_times.append(elapsed)
+                if not is_success:
+                    error_count += 1
+                total_count += 1
 
-        metrics = {
-            "total_requests": total_count,
-            "error_count": error_count,
-            "error_percent": (error_count / total_count) * 100,
-            "avg_response_time": sum(elapsed_times) / total_count if elapsed_times else 0,
-            "min_response_time": min(elapsed_times) if elapsed_times else 0,
-            "max_response_time": max(elapsed_times) if elapsed_times else 0,
-            "p95": statistics.quantiles(elapsed_times, n=20)[18] if len(elapsed_times) >= 2 else 0,
-            "p99": statistics.quantiles(elapsed_times, n=100)[98] if len(elapsed_times) >= 2 else 0,
-        }
-        
-        return metrics
+        return elapsed_times, error_count, total_count
 
-if __name__ == "__main__":
-    # Test with a dummy file if needed
-    pass
+    @staticmethod
+    def _percentile(data: list[int], pct: int) -> float:
+        """Return the Nth percentile from a sorted data list."""
+        if len(data) < _MIN_SAMPLES_FOR_PERCENTILES:
+            return 0.0
+        # quantiles(data, n=100) gives 99 cut points; index pct-1 gives the pct-th percentile
+        return statistics.quantiles(data, n=100)[pct - 1]
