@@ -1,13 +1,28 @@
 """
 reporting.py - Generates JSON and HTML reports from scenario results.
+
+New capabilities vs original:
+    - WARN decision rendered in amber in HTML tables.
+    - send_webhook_notification() — POST a completion summary to a Slack-compatible
+      incoming-webhook URL (or any generic JSON endpoint).
+    - save_baseline() / compare_to_baseline() — persist a golden-run baseline and
+      flag P95 regressions on subsequent runs.
+    - clean_old_results() — prune stale per-scenario CSV files from results/.
 """
 import json
 import logging
+import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Regression threshold: flag if current P95 is more than this % worse than baseline.
+DEFAULT_REGRESSION_THRESHOLD = 0.20   # 20 %
+
+# How many result CSV files to keep per scenario (older ones are deleted).
+DEFAULT_KEEP_RESULTS = 5
 
 _HTML_STYLE = """
     body  { font-family: Inter, sans-serif; margin: 24px; background: #f4f4f9; color: #333; }
@@ -21,9 +36,14 @@ _HTML_STYLE = """
     th    { background: #007bff; color: #fff; }
     tr:nth-child(even) { background: #f8f9ff; }
     .stop    { color: #d32f2f; font-weight: 700; }
+    .warn    { color: #f57c00; font-weight: 700; }
     .proceed { color: #388e3c; font-weight: 700; }
     .breakpoint { background: #fff3e0; border-left: 4px solid #ff9800;
                   padding: 8px 14px; margin-top: 8px; border-radius: 4px; }
+    .abort      { background: #fce4ec; border-left: 4px solid #d32f2f;
+                  padding: 8px 14px; margin-top: 8px; border-radius: 4px; }
+    .regression { background: #fff8e1; border-left: 4px solid #fbc02d;
+                  padding: 8px 14px; margin-top: 8px; border-radius: 4px; font-size:0.85rem; }
 """
 
 _TABLE_HEADER = """
@@ -40,7 +60,12 @@ _TABLE_HEADER = """
 
 
 class Reporter:
-    """Writes JSON and HTML summary reports to disk."""
+    """Writes JSON and HTML summary reports to disk, sends webhook notifications,
+    manages baselines, and prunes stale result files."""
+
+    # ------------------------------------------------------------------
+    # Core report generation (unchanged API)
+    # ------------------------------------------------------------------
 
     @staticmethod
     def generate_json_report(results: list[Any], output_path: str) -> None:
@@ -77,23 +102,249 @@ class Reporter:
         path.write_text(html, encoding="utf-8")
         logger.info("HTML report → %s", output_path)
 
-    # --- Private helpers ---
+    # ------------------------------------------------------------------
+    # Webhook notification
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def send_webhook_notification(
+        results: list[Any],
+        webhook_url: str,
+        extra_context: Optional[dict] = None,
+    ) -> None:
+        """POST a test-completion summary to a Slack-compatible webhook URL.
+
+        The payload follows the Slack Incoming Webhooks format and is also
+        accepted by most generic JSON webhook endpoints.
+
+        Args:
+            results:       Serialised scenario results (list of dicts).
+            webhook_url:   Destination URL (Slack, Teams, PagerDuty, etc.).
+            extra_context: Optional key/value pairs added as attachment fields
+                           (e.g. {"regressions": 2, "environment": "staging"}).
+        """
+        summary_lines: list[str] = []
+        for scenario in results:
+            bp   = scenario.get("breakpoint")
+            abrt = scenario.get("abort_reason")
+            if abrt:
+                line = f"• *{scenario['name']}*: ❌ aborted — {abrt}"
+            elif bp:
+                line = f"• *{scenario['name']}*: ⚠️ breakpoint at *{bp} users*"
+            else:
+                line = f"• *{scenario['name']}*: ✅ all load steps passed"
+            summary_lines.append(line)
+
+        attachments: list[dict] = [
+            {
+                "color": "#36a64f",
+                "title": "NixPerf Load Test Complete",
+                "text": "\n".join(summary_lines),
+                "footer": (
+                    f"NixPerf Orchestrator | "
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                ),
+            }
+        ]
+
+        if extra_context:
+            attachments[0]["fields"] = [
+                {"title": k, "value": str(v), "short": True}
+                for k, v in extra_context.items()
+            ]
+
+        payload = json.dumps({"attachments": attachments}).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                logger.info(
+                    "Webhook notification sent successfully (HTTP %d)", resp.status
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Webhook notification failed (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------
+    # Baseline management
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def save_baseline(
+        results: list[Any],
+        baseline_path: str = "reports/baseline.json",
+    ) -> None:
+        """Persist the current results as the performance baseline.
+
+        Subsequent runs will be compared against this file by
+        ``compare_to_baseline()``.
+        """
+        path = Path(baseline_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(results, f, indent=4)
+        logger.info("Baseline saved → %s", baseline_path)
+
+    @staticmethod
+    def compare_to_baseline(
+        current: list[Any],
+        baseline_path: str = "reports/baseline.json",
+        regression_threshold: float = DEFAULT_REGRESSION_THRESHOLD,
+    ) -> list[dict]:
+        """Compare current results to the saved baseline.
+
+        If no baseline exists, the current results are saved as the new
+        baseline and an empty list is returned.
+
+        Args:
+            current:              Serialised scenario results for this run.
+            baseline_path:        Path to the baseline JSON file.
+            regression_threshold: Relative P95 increase that is flagged as a
+                                  regression (default: 0.20 = 20 %).
+
+        Returns:
+            List of regression dicts (empty if none found).  Each dict contains:
+                scenario, users, current_p95, baseline_p95, regression_pct.
+        """
+        path = Path(baseline_path)
+        if not path.exists():
+            logger.info(
+                "No baseline found at '%s' — saving current run as baseline",
+                baseline_path,
+            )
+            Reporter.save_baseline(current, baseline_path)
+            return []
+
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                baseline = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Could not read baseline file '%s' (%s) — skipping comparison",
+                baseline_path, exc,
+            )
+            return []
+
+        baseline_map: dict[str, dict] = {s["name"]: s for s in baseline}
+        regressions: list[dict] = []
+
+        for scenario in current:
+            name = scenario["name"]
+            if name not in baseline_map:
+                logger.debug(
+                    "Scenario '%s' not found in baseline — skipping comparison", name
+                )
+                continue
+
+            base_runs: dict[int, dict] = {
+                r["users"]: r for r in baseline_map[name].get("runs", [])
+            }
+
+            for run in scenario.get("runs", []):
+                users     = run["users"]
+                curr_p95  = run.get("metrics", {}).get("p95", 0)
+                base_run  = base_runs.get(users)
+                base_p95  = base_run.get("metrics", {}).get("p95", 0) if base_run else 0
+
+                if base_p95 > 0 and curr_p95 > 0:
+                    delta = (curr_p95 - base_p95) / base_p95
+                    if delta > regression_threshold:
+                        finding = {
+                            "scenario":       name,
+                            "users":          users,
+                            "current_p95":    round(curr_p95, 1),
+                            "baseline_p95":   round(base_p95, 1),
+                            "regression_pct": round(delta * 100, 1),
+                        }
+                        regressions.append(finding)
+                        logger.warning(
+                            "⚠ REGRESSION — scenario '%s' at %d users: "
+                            "P95 %.0f ms → %.0f ms (+%.0f%%)",
+                            name, users, base_p95, curr_p95, delta * 100,
+                        )
+
+        if not regressions:
+            logger.info("Baseline comparison: no regressions detected ✓")
+
+        return regressions
+
+    # ------------------------------------------------------------------
+    # Result file retention
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def clean_old_results(
+        scenario_name: str,
+        results_dir: str = "results",
+        keep_last: int = DEFAULT_KEEP_RESULTS,
+    ) -> None:
+        """Delete old result CSV files, keeping only the most recent ``keep_last``.
+
+        Files are sorted by modification time so the newest are always retained.
+
+        Args:
+            scenario_name: Scenario name used as the filename prefix.
+            results_dir:   Directory containing result CSV files.
+            keep_last:     Number of recent files to retain (default: 5).
+        """
+        dir_path = Path(results_dir)
+        if not dir_path.exists():
+            return
+
+        pattern = f"{scenario_name}_*.csv"
+        files = sorted(dir_path.glob(pattern), key=lambda p: p.stat().st_mtime)
+        to_delete = files[:-keep_last] if len(files) > keep_last else []
+
+        if not to_delete:
+            return
+
+        deleted = 0
+        for old_file in to_delete:
+            try:
+                old_file.unlink()
+                deleted += 1
+                logger.debug("Cleaned up old result file: %s", old_file.name)
+            except OSError as exc:
+                logger.warning("Could not delete result file %s: %s", old_file.name, exc)
+
+        logger.info(
+            "Retention policy: removed %d old result file(s) for scenario '%s' "
+            "(kept last %d)",
+            deleted, scenario_name, keep_last,
+        )
+
+    # ------------------------------------------------------------------
+    # Private HTML helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _render_scenario(scenario: dict) -> str:
         rows = "".join(Reporter._render_run_row(r) for r in scenario.get("runs", []))
-        breakpoint_html = ""
+
+        extras = ""
         if scenario.get("breakpoint"):
-            breakpoint_html = (
+            extras += (
                 f'<p class="breakpoint">⚠️ Breaking load point: '
                 f'<strong>{scenario["breakpoint"]} users</strong></p>'
             )
-        return f"<h2>Scenario: {scenario['name']}</h2>{_TABLE_HEADER}{rows}</table>{breakpoint_html}"
+        if scenario.get("abort_reason"):
+            extras += (
+                f'<p class="abort">❌ Scenario aborted: '
+                f'{scenario["abort_reason"]}</p>'
+            )
+
+        return (
+            f"<h2>Scenario: {scenario['name']}</h2>"
+            f"{_TABLE_HEADER}{rows}</table>{extras}"
+        )
 
     @staticmethod
     def _render_run_row(run: dict) -> str:
-        decision = run["decision"]
-        css_class = "stop" if decision == "STOP" else "proceed"
+        decision  = run["decision"]
+        css_class = {"STOP": "stop", "WARN": "warn"}.get(decision, "proceed")
         m = run.get("metrics", {})
         return (
             f"<tr>"

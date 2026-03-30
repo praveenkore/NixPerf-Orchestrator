@@ -5,12 +5,48 @@ scenarios:
 
     ramp_strategy:
       type: constant_arrival
-      arrival_rate: 5         # users injected per second → rampup = users / 5
+      arrival_rate: 5       # users injected per second → rampup = users / arrival_rate
 
-    retry_count: 1            # retry once on JMeter failure
-    timeout_seconds: 7200     # kill JMeter after 2 hours
-    mode: static              # static | adaptive (Phase 2)
+    # ── Execution settings ──────────────────────────────────────────────────
+    retry_count: 1          # retry JMeter once on failure (2 total attempts)
+    timeout_seconds: 7200   # hard kill JMeter process after 2 hours
 
+    # ── SLA thresholds ──────────────────────────────────────────────────────
     sla:
-      p95: 2000               # milliseconds
-      error_threshold: 50     # percent
+      p95: 2000             # milliseconds — hard stop if P95 exceeds this
+      error_threshold: 50   # percent      — hard stop if error rate exceeds this
+
+    # ── Decision mode ───────────────────────────────────────────────────────
+    # static:   threshold-only (PROCEED / WARN / STOP)
+    # adaptive: trend-aware linear regression — stops before SLA is breached
+    mode: static
+
+    # ── Autonomous operation settings (all optional) ────────────────────────
+
+    # Warmup probe: run this many users before load_steps[0] to warm caches
+    # and JVM JIT. Results are discarded. Set to 0 to disable.
+    warmup_users: 10
+
+    # Wait this many seconds between load steps so TCP connections drain,
+    # GC pauses settle, and backend thread pools recover.
+    cooldown_seconds: 60
+
+    # Abort the entire scenario after this many consecutive JMeter failures
+    # (e.g. slave unreachable, JMX invalid). Prevents silent all-null reports
+    # caused by infrastructure outages.
+    max_consecutive_failures: 2
+
+
+# ── Optional: distributed slave nodes ──────────────────────────────────────
+# Can also be passed via --slaves 10.0.0.1,10.0.0.2 on the CLI.
+# The CLI flag takes precedence over this list.
+# slaves:
+#   - 192.168.1.10
+#   - 192.168.1.11
+
+
+# ── Optional: webhook notification on test completion ───────────────────────
+# Supports Slack Incoming Webhooks and any generic JSON POST endpoint.
+# Can also be passed via --webhook-url on the CLI.
+# notification:
+#   webhook_url: https://hooks.slack.com/services/XXX/YYY/ZZZ

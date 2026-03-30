@@ -27,6 +27,14 @@ DEFAULT_BATCH_SIZE: int = 10_000
 # At 100k entries of int (8 bytes each) ≈ 800 KB — negligible.
 DEFAULT_RESERVOIR_SIZE: int = 100_000
 
+# Minimum number of data rows required before results are considered trustworthy.
+# Files with fewer rows are flagged as possibly truncated/incomplete.
+MIN_VALID_ROWS: int = 10
+
+# JMeter's default CSV format has 9+ comma-separated columns per row.
+# Fewer commas on the last row is a reliable indicator of truncation.
+MIN_EXPECTED_COLUMNS: int = 6
+
 
 class ResultsParser:
     """Reads a JMeter result file and computes performance metrics.
@@ -58,6 +66,8 @@ class ResultsParser:
         """Stream-parse the result file and return computed Metrics, or None if empty."""
         if not self.file_path.exists():
             raise FileNotFoundError(f"Result file not found: {self.file_path}")
+
+        self._check_file_integrity()  # warn-only; never blocks parsing
 
         aggregator = _RunningAggregator(self.reservoir_size)
 
@@ -96,6 +106,48 @@ class ResultsParser:
         return aggregator.to_metrics()
 
     # --- Private helpers ---
+
+    def _check_file_integrity(self) -> bool:
+        """Warn (but never raise) if the JTL file looks truncated or suspiciously small.
+
+        Checks performed:
+            1. File contains at least MIN_VALID_ROWS data rows (excluding header).
+            2. The last data row has at least MIN_EXPECTED_COLUMNS comma-separated
+               fields — a truncated write often cuts the final line short.
+
+        Returns:
+            True  — file looks complete.
+            False — file looks incomplete; a WARNING has been logged.
+        """
+        try:
+            with self.file_path.open("r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
+
+            # Strip blank lines; first line is the CSV header.
+            data_lines = [ln for ln in all_lines[1:] if ln.strip()]
+
+            if len(data_lines) < MIN_VALID_ROWS:
+                logger.warning(
+                    "JTL file has only %d data row(s) — possibly incomplete or "
+                    "truncated (need >= %d): %s",
+                    len(data_lines), MIN_VALID_ROWS, self.file_path.name,
+                )
+                return False
+
+            last_line = data_lines[-1]
+            if last_line.count(",") < MIN_EXPECTED_COLUMNS:
+                logger.warning(
+                    "JTL last row appears truncated (%d comma(s), expected >= %d): %s",
+                    last_line.count(","), MIN_EXPECTED_COLUMNS, self.file_path.name,
+                )
+                return False
+
+            return True
+
+        except Exception as exc:  # noqa: BLE001
+            # Never let an integrity check break the parse pipeline.
+            logger.debug("File integrity check skipped (%s): %s", exc, self.file_path.name)
+            return True
 
     @staticmethod
     def _parse_row(row: dict) -> Optional[tuple[int, bool]]:

@@ -6,6 +6,11 @@ Validates:
     - JMX file exists
     - Results directory is writable
     - Sufficient disk space
+
+Additional public helper (used per load step in main.py):
+    check_slaves_alive() — lightweight per-step slave health re-check that
+    returns the list of currently reachable slaves and raises PreflightError
+    if too many have gone offline.
 """
 import logging
 import os
@@ -17,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RMI_PORTS = [1099, 50000]
 MIN_DISK_SPACE_MB = 500
+
+# Fraction of the original slave pool that must remain alive.
+# If fewer than this fraction respond, the step is aborted.
+DEFAULT_SLAVE_ALIVE_THRESHOLD = 0.5
 
 
 class PreflightError(Exception):
@@ -80,6 +89,64 @@ def _check_disk_space() -> None:
         raise
     except Exception:
         logger.debug("Disk space check skipped (not supported)")
+
+
+def check_slaves_alive(
+    slaves: list[str],
+    alive_threshold: float = DEFAULT_SLAVE_ALIVE_THRESHOLD,
+    ports: list[int] = DEFAULT_RMI_PORTS,
+) -> list[str]:
+    """Per-step lightweight slave health check — called before every load step.
+
+    Unlike the startup ``run_preflight_checks``, this function is tolerant of
+    partial slave failure: it logs a warning for each unreachable slave and
+    returns only the alive subset, *unless* the fraction of alive slaves drops
+    below ``alive_threshold`` in which case it raises ``PreflightError`` so
+    the caller can abort the scenario rather than run under-loaded.
+
+    Args:
+        slaves:          List of slave hostnames or IP addresses to probe.
+        alive_threshold: Minimum fraction of slaves that must be reachable
+                         (default: 0.5 — at least 50 % must be alive).
+        ports:           RMI ports to probe (default: [1099, 50000]).
+
+    Returns:
+        Sorted list of slave addresses that are currently reachable.
+
+    Raises:
+        PreflightError: If fewer than ``alive_threshold`` fraction of slaves respond.
+    """
+    if not slaves:
+        return []
+
+    alive: list[str] = []
+    for slave in slaves:
+        try:
+            _check_slave_connectivity(slave, ports=ports)
+            alive.append(slave)
+        except PreflightError:
+            logger.warning(
+                "Slave %s is unreachable — excluding from this load step", slave
+            )
+
+    alive_fraction = len(alive) / len(slaves)
+    if alive_fraction < alive_threshold:
+        raise PreflightError(
+            f"Only {len(alive)}/{len(slaves)} slave(s) are alive "
+            f"({alive_fraction * 100:.0f}% < required {alive_threshold * 100:.0f}%). "
+            f"Aborting load step to avoid under-loaded results."
+        )
+
+    if len(alive) < len(slaves):
+        logger.warning(
+            "Reduced slave pool for this step: %d/%d alive — "
+            "load will be distributed across fewer nodes",
+            len(alive), len(slaves),
+        )
+    else:
+        logger.debug("All %d slave(s) are alive ✓", len(slaves))
+
+    return alive
 
 
 def _check_slave_connectivity(slave: str, ports: list[int] = DEFAULT_RMI_PORTS) -> None:

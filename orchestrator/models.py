@@ -44,10 +44,12 @@ class ScenarioResult:
     name: str
     runs: list = field(default_factory=list)
     breakpoint_users: Optional[int] = None
+    abort_reason: Optional[str] = None  # set when scenario is aborted due to infra failure
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
             "runs": [r.to_dict() for r in self.runs],
             "breakpoint": self.breakpoint_users,
+            "abort_reason": self.abort_reason,
         }

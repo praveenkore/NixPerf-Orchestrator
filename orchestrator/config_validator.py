@@ -29,6 +29,26 @@ def validate_config(config: dict) -> None:
     for idx, scenario in enumerate(config["scenarios"]):
         _validate_scenario(scenario, idx)
 
+    # ── Optional top-level keys ─────────────────────────────────────────────
+
+    if "slaves" in config:
+        slaves = config["slaves"]
+        if not isinstance(slaves, list) or not all(isinstance(s, str) for s in slaves):
+            raise ConfigValidationError(
+                "Top-level 'slaves' must be a list of hostname/IP strings"
+            )
+
+    if "notification" in config:
+        notif = config["notification"]
+        if not isinstance(notif, dict):
+            raise ConfigValidationError("'notification' must be a dictionary")
+        if "webhook_url" in notif:
+            url = notif["webhook_url"]
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                raise ConfigValidationError(
+                    f"notification.webhook_url must be a valid HTTP/S URL, got '{url}'"
+                )
+
     logger.info("Config validation passed ✓ (%d scenarios)", len(config["scenarios"]))
 
 
@@ -108,6 +128,36 @@ def _validate_scenario(scenario: dict, idx: int) -> None:
         if not isinstance(ts, (int, float)) or ts <= 0:
             raise ConfigValidationError(
                 f"{prefix}: timeout_seconds must be positive, got {ts}"
+            )
+
+    # ── Autonomous operation fields (all optional) ──────────────────────────
+
+    if "cooldown_seconds" in scenario:
+        cd = scenario["cooldown_seconds"]
+        if not isinstance(cd, (int, float)) or cd < 0:
+            raise ConfigValidationError(
+                f"{prefix}: cooldown_seconds must be >= 0, got {cd}"
+            )
+
+    if "warmup_users" in scenario:
+        wu = scenario["warmup_users"]
+        if not isinstance(wu, int) or wu < 0:
+            raise ConfigValidationError(
+                f"{prefix}: warmup_users must be a non-negative integer, got {wu}"
+            )
+
+    if "max_consecutive_failures" in scenario:
+        mcf = scenario["max_consecutive_failures"]
+        if not isinstance(mcf, int) or mcf < 1:
+            raise ConfigValidationError(
+                f"{prefix}: max_consecutive_failures must be >= 1, got {mcf}"
+            )
+
+    if "mode" in scenario:
+        valid_modes = ("static", "adaptive")
+        if scenario["mode"] not in valid_modes:
+            raise ConfigValidationError(
+                f"{prefix}: mode must be one of {valid_modes}, got '{scenario['mode']}'"
             )
 
 
