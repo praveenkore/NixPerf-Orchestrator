@@ -70,12 +70,22 @@ NixPerf-Orchestrator™ automates the full lifecycle of distributed performance 
 git clone https://github.com/praveenkore/NixPerf-Orchestrator.git
 cd NixPerf-Orchestrator
 
-# 2. Install Python dependencies
+# 2. Create and activate a virtual environment
+python -m venv myenv
+
+# Windows:
+myenv\Scripts\activate
+# Linux/macOS:
+source myenv/bin/activate
+
+# 3. Install Python dependencies
 pip install PyYAML
 
-# 3. Ensure jmeter is on PATH
+# 4. Ensure jmeter is on PATH
 jmeter --version
 ```
+
+For more detailed environment troubleshooting, see [HELP.md](./HELP.md).
 
 ---
 

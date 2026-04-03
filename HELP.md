@@ -412,3 +412,63 @@ Set these on **both master and slave nodes** before starting JMeter.
 | Timestamp skew in reports | No time sync | Install and enable `chrony` on all nodes (see §6) |
 | `OutOfMemoryError` in JMeter | Default JVM heap too small | Set `HEAP=-Xms4g -Xmx4g` before starting JMeter (see §8) |
 | Old CSVs filling disk | Default retention (5 files) too high | Call `Reporter.clean_old_results(name, keep_last=2)` or reduce test frequency |
+
+---
+
+## 11. Python Environment Setup
+
+The NixPerf Orchestrator is a Python-based framework and works best in an isolated virtual environment (`venv`).
+
+### 11.1 Creating a Virtual Environment
+
+Running within a virtual environment ensures that the orchestrator's dependencies (like `PyYAML`) do not conflict with other system-level Python packages.
+
+**Linux / macOS:**
+```bash
+# Create the environment
+python -m venv myenv
+
+# Activate it
+source myenv/bin/activate
+```
+
+**Windows (PowerShell):**
+```powershell
+# Create the environment
+python -m venv myenv
+
+# Activate it
+.\myenv\Scripts\Activate.ps1
+```
+
+**Windows (Command Prompt):**
+```cmd
+# Create the environment
+python -m venv myenv
+
+# Activate it
+myenv\Scripts\activate.bat
+```
+
+### 11.2 Installing Dependencies
+
+Once the environment is activated, install the required packages using `pip`:
+
+```bash
+pip install PyYAML
+```
+
+### 11.3 Verifying the Setup
+
+You can verify that the environment is correctly configured by checking the installed version of PyYAML and ensuring that the orchestrator can be invoked:
+
+```bash
+# Check packages
+pip list
+
+# Test invocation
+python -m orchestrator.main --help
+```
+
+> [!TIP]
+> Always remember to **activate** your environment (`source myenv/bin/activate` or equivalent) before running any tests. You will typically see `(myenv)` prepended to your shell prompt when it is active.
