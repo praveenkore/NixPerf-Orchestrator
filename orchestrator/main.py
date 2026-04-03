@@ -400,8 +400,9 @@ def _execute_step(
                  delete the result file immediately.  The engine's history
                  is NOT updated so warmup traffic does not skew trend analysis.
     """
-    timestamp   = int(time.time())
-    result_file = f"results/{name}_{users}_{timestamp}.csv"
+    # Use JMX basename + users for CSV naming (Gap #10)
+    jmx_basename = Path(jmx_path).stem
+    result_file  = f"results/{jmx_basename}_{users}.csv"
 
     runner.run(
         jmx_path, result_file, users,
@@ -503,6 +504,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Ignore checkpoints and always start from scratch",
     )
+    parser.add_argument(
+        "--jmeter-path",
+        default=None,
+        help="Path to the JMeter executable (overrides config-level jmeter_path)",
+    )
     return parser.parse_args()
 
 
@@ -524,18 +530,23 @@ def main() -> None:
     elif config.get("slaves"):
         slaves = list(config["slaves"])
 
-    # Step 3: Pre-flight checks.
+    # Step 3: Resolve JMeter path.
+    jmeter_path = args.jmeter_path or config.get("jmeter_path", "jmeter")
+
+    # Step 4: Pre-flight checks.
     if not args.skip_preflight:
         try:
-            run_preflight_checks(config["scenarios"], slaves=slaves)
+            run_preflight_checks(
+                config["scenarios"], slaves=slaves, jmeter_path=jmeter_path
+            )
         except PreflightError as exc:
             logger.error("Pre-flight check failed: %s", exc)
             sys.exit(1)
     else:
         logger.info("Pre-flight checks skipped (--skip-preflight)")
 
-    # Step 4: Run all scenarios.
-    runner  = JMeterRunner()
+    # Step 5: Run all scenarios.
+    runner  = JMeterRunner(jmeter_path=jmeter_path)
     resume  = not args.no_resume
     webhook = args.webhook_url or (
         config.get("notification", {}) or {}

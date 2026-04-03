@@ -1,3 +1,5 @@
+# jmeter_path: "jmeter"     # Path to the JMeter executable (optional)
+
 scenarios:
   - name: login_test
     jmx_path: scenarios/login.jmx

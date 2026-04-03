@@ -14,6 +14,7 @@ Additional public helper (used per load step in main.py):
 """
 import logging
 import os
+import shutil
 import socket
 from pathlib import Path
 from typing import Optional
@@ -35,10 +36,12 @@ class PreflightError(Exception):
 def run_preflight_checks(
     scenarios: list[dict],
     slaves: Optional[list[str]] = None,
+    jmeter_path: str = "jmeter",
 ) -> None:
     """Run all pre-flight checks. Raises PreflightError on first failure."""
     logger.info("Running pre-flight checks...")
 
+    _check_jmeter_executable(jmeter_path)
     _check_result_dir()
     _check_disk_space()
 
@@ -50,6 +53,17 @@ def run_preflight_checks(
             _check_slave_connectivity(slave)
 
     logger.info("All pre-flight checks passed ✓")
+
+
+def _check_jmeter_executable(jmeter_path: str) -> None:
+    """Verify that the JMeter executable is available in PATH or at the given path."""
+    if shutil.which(jmeter_path) is None:
+        raise PreflightError(
+            f"JMeter executable not found: '{jmeter_path}'. "
+            f"Please ensure JMeter is installed and in your PATH, "
+            f"or specify the path with --jmeter-path."
+        )
+    logger.debug("JMeter executable found: %s", jmeter_path)
 
 
 def _check_jmx_exists(jmx_path: str) -> None:

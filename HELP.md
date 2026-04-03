@@ -21,6 +21,7 @@ The `scenarios.yaml` file is the primary configuration point for the framework.
 | `retry_count` | int | ✗ | JMeter retry attempts per step. Default: `1` (2 total attempts). |
 | `timeout_seconds` | int | ✗ | Hard kill timeout per JMeter run. Default: `7200` (2 h). |
 | `mode` | string | ✗ | Decision engine mode: `static` (default) or `adaptive` (see §1.3). |
+| `jmeter_path` | string | ✗ | Path to the JMeter executable. Default: `jmeter`. |
 
 ### 1.2 Ramp Strategy
 
@@ -108,6 +109,7 @@ python -m orchestrator.main [OPTIONS]
 | `--slaves IP1,IP2,...` | Comma-separated JMeter slave IPs. **Overrides** the `slaves` list in YAML. |
 | `--webhook-url URL` | Slack/generic webhook URL for completion notifications. **Overrides** `notification.webhook_url` in YAML. |
 | `--no-resume` | Ignore saved checkpoints and always start from the first load step. |
+| `--jmeter-path PATH` | Path to the JMeter executable. **Overrides** `jmeter_path` in YAML. |
 
 ### Examples
 
@@ -383,7 +385,7 @@ Set these on **both master and slave nodes** before starting JMeter.
 
 | Path | Description |
 | :--- | :--- |
-| `results/<name>_<users>_<ts>.csv` | Raw JMeter JTL result file per step. Last 5 kept per scenario. |
+| `results/<jmx_basename>_<users>.csv` | Raw JMeter JTL result file per step. Overwrites on each run. |
 | `reports/summary_<ts>.json` | Full structured results for all scenarios. |
 | `reports/summary_<ts>.html` | Human-readable HTML report with colour-coded decisions. |
 | `reports/baseline.json` | Saved baseline for regression comparison. Delete to reset. |
@@ -396,7 +398,7 @@ Set these on **both master and slave nodes** before starting JMeter.
 
 | Symptom | Likely cause | Resolution |
 | :--- | :--- | :--- |
-| No result CSV produced | `jmeter` not found on PATH | Add JMeter `bin/` to `PATH`, or set `jmeter_path` in `JMeterRunner` constructor |
+| No result CSV produced | `jmeter` not found on PATH | Add JMeter `bin/` to `PATH`, set `jmeter_path` in YAML, or use `--jmeter-path` CLI flag |
 | `Connection Refused` on slave | RMI ports not open | Open ports 1099, 50000, 50001 on slave firewalls |
 | Random distributed failures | Ephemeral RMI ports | Fix `server.rmi.localport` in `jmeter.properties` (see §5.2) |
 | Scenario aborted after 2 steps | `max_consecutive_failures` hit | Check slave connectivity; inspect JMeter stderr in logs |
