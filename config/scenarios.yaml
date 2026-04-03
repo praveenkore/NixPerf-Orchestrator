@@ -52,3 +52,12 @@ scenarios:
 # Can also be passed via --webhook-url on the CLI.
 # notification:
 #   webhook_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
+
+# ── Optional: SMTP email notification ──────────────────────────────────────
+# smtp:
+#   host: smtp.gmail.com
+#   port: 587
+#   user: your-email@gmail.com
+#   password: your-app-password
+#   sender: NixPerf <nixperf@yourdomain.com>
+#   recipient: team@yourdomain.com

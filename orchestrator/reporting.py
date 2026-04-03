@@ -11,8 +11,11 @@ New capabilities vs original:
 """
 import json
 import logging
+import smtplib
 import urllib.request
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Optional
 
@@ -167,6 +170,89 @@ class Reporter:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Webhook notification failed (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------
+    # SMTP email notification
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def send_email_notification(
+        results: list[Any],
+        smtp_config: dict,
+        extra_context: Optional[dict] = None,
+    ) -> None:
+        """Send a test-completion summary via SMTP.
+
+        Args:
+            results:       Serialised scenario results (list of dicts).
+            smtp_config:   Dict containing host, port, user, password,
+                           sender, and recipient.
+            extra_context: Optional key/value pairs (e.g. {"regressions": 2}).
+        """
+        host      = smtp_config.get("host")
+        port      = smtp_config.get("port", 587)
+        user      = smtp_config.get("user")
+        password  = smtp_config.get("password")
+        sender    = smtp_config.get("sender")
+        recipient = smtp_config.get("recipient")
+        use_tls   = smtp_config.get("use_tls", port == 587)
+
+        if not all([host, sender, recipient]):
+            logger.warning("SMTP configuration incomplete — skipping email notification")
+            return
+
+        # Prepare summary text
+        summary_lines: list[str] = []
+        for scenario in results:
+            bp   = scenario.get("breakpoint")
+            abrt = scenario.get("abort_reason")
+            if abrt:
+                line = f"• {scenario['name']}: ❌ aborted — {abrt}"
+            elif bp:
+                line = f"• {scenario['name']}: ⚠️ breakpoint at {bp} users"
+            else:
+                line = f"• {scenario['name']}: ✅ all load steps passed"
+            summary_lines.append(line)
+
+        subject = f"NixPerf Load Test Complete — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        body = (
+            f"NixPerf Load Test Summary\n"
+            f"=========================\n\n"
+            + "\n".join(summary_lines)
+            + "\n\n"
+        )
+
+        if extra_context:
+            body += "Details:\n"
+            for k, v in extra_context.items():
+                body += f"• {k}: {v}\n"
+            body += "\n"
+
+        body += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+
+        # Create email
+        msg = MIMEMultipart()
+        msg["From"]    = sender
+        msg["To"]      = recipient
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+
+        try:
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                if use_tls:
+                    server.starttls()
+                
+                # Only attempt login if username is provided
+                if user:
+                    if "AUTH" in server.esmtp_features or "AUTH" in server.features:
+                        server.login(user, password or "")
+                    else:
+                        logger.debug("SMTP server does not support AUTH — skipping login")
+                
+                server.send_message(msg)
+            logger.info("Email notification sent successfully to %s", recipient)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Email notification failed (non-fatal): %s", exc)
 
     # ------------------------------------------------------------------
     # Baseline management

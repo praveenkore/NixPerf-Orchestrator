@@ -218,6 +218,27 @@ python -m orchestrator.main --webhook-url https://hooks.slack.com/...
 
 > **Note:** Webhook failures are non-fatal — the test reports are always written to disk regardless.
 
+### 3.9 SMTP Email Notifications
+
+The orchestrator can send a summary of the test results via email using an SMTP relay (e.g., Gmail, SendGrid, or a private company relay).
+
+**Configuration (`scenarios.yaml`):**
+
+```yaml
+smtp:
+  host: smtp.gmail.com        # SMTP server address
+  port: 587                   # Port (usually 587 for STARTTLS)
+  user: your-email@gmail.com  # Optional: SMTP username
+  password: your-app-password # Optional: SMTP password
+  sender: NixPerf <nixperf@domain.com>
+  recipient: team@domain.com
+```
+
+**Troubleshooting:**
+- **STARTTLS**: The orchestrator uses STARTTLS by default. Ensure your relay supports it if using port 587.
+- **App Passwords**: If using Gmail, you must use an "App Password" rather than your primary Google password.
+- **Multiple Recipients**: For now, specify a single recipient or a distribution-list email.
+
 ### 3.8 Baseline Comparison & Regression Detection
 
 After generating reports, the orchestrator compares current P95 values against a saved baseline:

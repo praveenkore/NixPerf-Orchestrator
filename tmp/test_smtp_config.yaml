@@ -1,0 +1,16 @@
+smtp:
+  host: 127.0.0.1
+  port: 1025
+  user: test
+  password: password
+  sender: test@nixperf.local
+  recipient: recipient@nixperf.local
+
+scenarios:
+  - name: smtp_test
+    jmx_path: scenarios/login.jmx
+    load_steps: [10]
+    sla:
+      p95: 2000
+      error_threshold: 50
+    warmup_users: 0

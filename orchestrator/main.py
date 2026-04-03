@@ -443,8 +443,9 @@ def _execute_step(
 def _write_reports(
     results: list[ScenarioResult],
     webhook_url: Optional[str] = None,
+    smtp_config: Optional[dict] = None,
 ) -> None:
-    """Generate JSON + HTML reports, run baseline comparison, send webhook."""
+    """Generate JSON + HTML reports, run baseline comparison, send notifications."""
     timestamp = int(time.time())
     raw = [r.to_dict() for r in results]
 
@@ -467,6 +468,13 @@ def _write_reports(
         if regressions:
             extra["regressions"] = len(regressions)
         Reporter.send_webhook_notification(raw, webhook_url, extra_context=extra or None)
+
+    # Email notification (Gap #11).
+    if smtp_config:
+        extra = {}
+        if regressions:
+            extra["regressions"] = len(regressions)
+        Reporter.send_email_notification(raw, smtp_config, extra_context=extra or None)
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +566,8 @@ def main() -> None:
     ]
 
     # Step 5: Generate reports, compare baseline, notify.
-    _write_reports(scenario_results, webhook_url=webhook)
+    smtp_config = config.get("smtp")
+    _write_reports(scenario_results, webhook_url=webhook, smtp_config=smtp_config)
     logger.info("Performance testing complete. Reports saved to reports/")
 
 
