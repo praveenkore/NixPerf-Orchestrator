@@ -2,7 +2,7 @@ smtp:
   host: 127.0.0.1
   port: 1025
   user: test
-  password: password
+  password: env:TEST_SMTP_PASSWORD
   sender: test@nixperf.local
   recipient: recipient@nixperf.local
 

@@ -9,20 +9,26 @@ New capabilities vs original:
       flag P95 regressions on subsequent runs.
     - clean_old_results() — prune stale per-scenario CSV files from results/.
 """
+
+import html
+import ipaddress
 import json
 import logging
+import os
 import smtplib
+import ssl
 import urllib.request
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 # Regression threshold: flag if current P95 is more than this % worse than baseline.
-DEFAULT_REGRESSION_THRESHOLD = 0.20   # 20 %
+DEFAULT_REGRESSION_THRESHOLD = 0.20  # 20 %
 
 # How many result CSV files to keep per scenario (older ones are deleted).
 DEFAULT_KEEP_RESULTS = 5
@@ -110,6 +116,28 @@ class Reporter:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _validate_webhook_url(url: str) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            raise ValueError(f"Webhook URL must use HTTPS scheme, got: {parsed.scheme}")
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError(f"Webhook URL has no hostname: {url}")
+        try:
+            addr = ipaddress.ip_address(hostname)
+            if (
+                addr.is_private
+                or addr.is_loopback
+                or addr.is_link_local
+                or addr.is_reserved
+                or addr.is_multicast
+            ):
+                raise ValueError(f"Webhook URL points to private/reserved IP: {addr}")
+        except ValueError as exc:
+            if "private" in str(exc) or "reserved" in str(exc):
+                raise
+
+    @staticmethod
     def send_webhook_notification(
         results: list[Any],
         webhook_url: str,
@@ -126,9 +154,15 @@ class Reporter:
             extra_context: Optional key/value pairs added as attachment fields
                            (e.g. {"regressions": 2, "environment": "staging"}).
         """
+        try:
+            Reporter._validate_webhook_url(webhook_url)
+        except ValueError as exc:
+            logger.warning("Webhook URL validation failed: %s", exc)
+            return
+
         summary_lines: list[str] = []
         for scenario in results:
-            bp   = scenario.get("breakpoint")
+            bp = scenario.get("breakpoint")
             abrt = scenario.get("abort_reason")
             if abrt:
                 line = f"• *{scenario['name']}*: ❌ aborted — {abrt}"
@@ -189,22 +223,32 @@ class Reporter:
                            sender, and recipient.
             extra_context: Optional key/value pairs (e.g. {"regressions": 2}).
         """
-        host      = smtp_config.get("host")
-        port      = smtp_config.get("port", 587)
-        user      = smtp_config.get("user")
-        password  = smtp_config.get("password")
-        sender    = smtp_config.get("sender")
+        host = smtp_config.get("host")
+        port = smtp_config.get("port", 587)
+        user = smtp_config.get("user")
+        password = smtp_config.get("password")
+        if password and isinstance(password, str) and password.startswith("env:"):
+            password = os.environ.get(password[4:], "")
+            if not password:
+                logger.warning(
+                    "SMTP password environment variable '%s' not set — skipping email",
+                    password,
+                )
+                return
+        sender = smtp_config.get("sender")
         recipient = smtp_config.get("recipient")
-        use_tls   = smtp_config.get("use_tls", port == 587)
+        use_tls = smtp_config.get("use_tls", port == 587)
 
         if not all([host, sender, recipient]):
-            logger.warning("SMTP configuration incomplete — skipping email notification")
+            logger.warning(
+                "SMTP configuration incomplete — skipping email notification"
+            )
             return
 
         # Prepare summary text
         summary_lines: list[str] = []
         for scenario in results:
-            bp   = scenario.get("breakpoint")
+            bp = scenario.get("breakpoint")
             abrt = scenario.get("abort_reason")
             if abrt:
                 line = f"• {scenario['name']}: ❌ aborted — {abrt}"
@@ -214,12 +258,12 @@ class Reporter:
                 line = f"• {scenario['name']}: ✅ all load steps passed"
             summary_lines.append(line)
 
-        subject = f"NixPerf Load Test Complete — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        subject = (
+            f"NixPerf Load Test Complete — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
         body = (
             f"NixPerf Load Test Summary\n"
-            f"=========================\n\n"
-            + "\n".join(summary_lines)
-            + "\n\n"
+            f"=========================\n\n" + "\n".join(summary_lines) + "\n\n"
         )
 
         if extra_context:
@@ -232,23 +276,26 @@ class Reporter:
 
         # Create email
         msg = MIMEMultipart()
-        msg["From"]    = sender
-        msg["To"]      = recipient
+        msg["From"] = sender
+        msg["To"] = recipient
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
 
         try:
+            ssl_context = ssl.create_default_context()
             with smtplib.SMTP(host, port, timeout=15) as server:
                 if use_tls:
-                    server.starttls()
-                
+                    server.starttls(context=ssl_context)
+
                 # Only attempt login if username is provided
                 if user:
                     if "AUTH" in server.esmtp_features or "AUTH" in server.features:
                         server.login(user, password or "")
                     else:
-                        logger.debug("SMTP server does not support AUTH — skipping login")
-                
+                        logger.debug(
+                            "SMTP server does not support AUTH — skipping login"
+                        )
+
                 server.send_message(msg)
             logger.info("Email notification sent successfully to %s", recipient)
         except Exception as exc:  # noqa: BLE001
@@ -310,7 +357,8 @@ class Reporter:
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning(
                 "Could not read baseline file '%s' (%s) — skipping comparison",
-                baseline_path, exc,
+                baseline_path,
+                exc,
             )
             return []
 
@@ -330,26 +378,30 @@ class Reporter:
             }
 
             for run in scenario.get("runs", []):
-                users     = run["users"]
-                curr_p95  = run.get("metrics", {}).get("p95", 0)
-                base_run  = base_runs.get(users)
-                base_p95  = base_run.get("metrics", {}).get("p95", 0) if base_run else 0
+                users = run["users"]
+                curr_p95 = run.get("metrics", {}).get("p95", 0)
+                base_run = base_runs.get(users)
+                base_p95 = base_run.get("metrics", {}).get("p95", 0) if base_run else 0
 
                 if base_p95 > 0 and curr_p95 > 0:
                     delta = (curr_p95 - base_p95) / base_p95
                     if delta > regression_threshold:
                         finding = {
-                            "scenario":       name,
-                            "users":          users,
-                            "current_p95":    round(curr_p95, 1),
-                            "baseline_p95":   round(base_p95, 1),
+                            "scenario": name,
+                            "users": users,
+                            "current_p95": round(curr_p95, 1),
+                            "baseline_p95": round(base_p95, 1),
                             "regression_pct": round(delta * 100, 1),
                         }
                         regressions.append(finding)
                         logger.warning(
                             "⚠ REGRESSION — scenario '%s' at %d users: "
                             "P95 %.0f ms → %.0f ms (+%.0f%%)",
-                            name, users, base_p95, curr_p95, delta * 100,
+                            name,
+                            users,
+                            base_p95,
+                            curr_p95,
+                            delta * 100,
                         )
 
         if not regressions:
@@ -380,8 +432,16 @@ class Reporter:
         if not dir_path.exists():
             return
 
-        pattern = f"{scenario_name}_*.csv"
-        files = sorted(dir_path.glob(pattern), key=lambda p: p.stat().st_mtime)
+        safe_prefix = (
+            scenario_name.replace("*", "")
+            .replace("?", "")
+            .replace("[", "")
+            .replace("]", "")
+        )
+        files = [
+            p for p in dir_path.glob("*.csv") if p.name.startswith(f"{safe_prefix}_")
+        ]
+        files.sort(key=lambda p: p.stat().st_mtime)
         to_delete = files[:-keep_last] if len(files) > keep_last else []
 
         if not to_delete:
@@ -394,12 +454,16 @@ class Reporter:
                 deleted += 1
                 logger.debug("Cleaned up old result file: %s", old_file.name)
             except OSError as exc:
-                logger.warning("Could not delete result file %s: %s", old_file.name, exc)
+                logger.warning(
+                    "Could not delete result file %s: %s", old_file.name, exc
+                )
 
         logger.info(
             "Retention policy: removed %d old result file(s) for scenario '%s' "
             "(kept last %d)",
-            deleted, scenario_name, keep_last,
+            deleted,
+            scenario_name,
+            keep_last,
         )
 
     # ------------------------------------------------------------------
@@ -413,32 +477,32 @@ class Reporter:
         extras = ""
         if scenario.get("breakpoint"):
             extras += (
-                f'<p class="breakpoint">⚠️ Breaking load point: '
-                f'<strong>{scenario["breakpoint"]} users</strong></p>'
+                f'<p class="breakpoint">&#9888;&#65039; Breaking load point: '
+                f"<strong>{html.escape(str(scenario['breakpoint']))}</strong></p>"
             )
         if scenario.get("abort_reason"):
             extras += (
-                f'<p class="abort">❌ Scenario aborted: '
-                f'{scenario["abort_reason"]}</p>'
+                f'<p class="abort">&#10060; Scenario aborted: '
+                f"{html.escape(str(scenario['abort_reason']))}</p>"
             )
 
         return (
-            f"<h2>Scenario: {scenario['name']}</h2>"
+            f"<h2>Scenario: {html.escape(scenario['name'])}</h2>"
             f"{_TABLE_HEADER}{rows}</table>{extras}"
         )
 
     @staticmethod
     def _render_run_row(run: dict) -> str:
-        decision  = run["decision"]
+        decision = run["decision"]
         css_class = {"STOP": "stop", "WARN": "warn"}.get(decision, "proceed")
         m = run.get("metrics", {})
         return (
             f"<tr>"
             f"<td>{run['users']}</td>"
-            f"<td class='{css_class}'>{decision}</td>"
+            f"<td class='{css_class}'>{html.escape(str(decision))}</td>"
             f"<td>{m.get('error_percent', 0):.2f}%</td>"
             f"<td>{m.get('p95', 0):.0f}</td>"
             f"<td>{m.get('avg_response_time', 0):.0f}</td>"
-            f"<td>{run['reason']}</td>"
+            f"<td>{html.escape(str(run.get('reason', '')))}</td>"
             f"</tr>"
         )

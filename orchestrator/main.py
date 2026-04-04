@@ -18,9 +18,11 @@ Usage:
     python -m orchestrator.main --webhook-url https://hooks.slack.com/...
     python -m orchestrator.main --slaves 10.0.0.1,10.0.0.2 --no-resume
 """
+
 import argparse
 import json
 import logging
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -33,7 +35,11 @@ from orchestrator.decision_engine import Decision, DecisionEngine
 from orchestrator.jmeter_runner import JMeterRunner
 from orchestrator.models import Metrics, RunResult, ScenarioResult
 from orchestrator.parser import ResultsParser
-from orchestrator.preflight import PreflightError, check_slaves_alive, run_preflight_checks
+from orchestrator.preflight import (
+    PreflightError,
+    check_slaves_alive,
+    run_preflight_checks,
+)
 from orchestrator.ramp_engine import calculate_rampup, get_default_ramp_strategy
 from orchestrator.reporting import Reporter
 
@@ -50,20 +56,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants / defaults
 # ---------------------------------------------------------------------------
-DEFAULT_CONFIG                 = "config/scenarios.yaml"
-CHECKPOINT_DIR                 = Path("reports")
+DEFAULT_CONFIG = "config/scenarios.yaml"
+CHECKPOINT_DIR = Path("reports")
 
-WARMUP_USERS_DEFAULT           = 10    # users for the warmup probe
-WARMUP_RAMPUP_DEFAULT          = 30    # ramp-up seconds for the warmup
-WARMUP_SETTLE_SECONDS          = 30    # post-warmup settle time before step 1
+WARMUP_USERS_DEFAULT = 10  # users for the warmup probe
+WARMUP_RAMPUP_DEFAULT = 30  # ramp-up seconds for the warmup
+WARMUP_SETTLE_SECONDS = 30  # post-warmup settle time before step 1
 
-COOLDOWN_DEFAULT_SECONDS       = 60    # between load steps
-MAX_CONSECUTIVE_FAILURES_DEFAULT = 2   # infra-failure abort threshold
+COOLDOWN_DEFAULT_SECONDS = 60  # between load steps
+MAX_CONSECUTIVE_FAILURES_DEFAULT = 2  # infra-failure abort threshold
 
 
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
+
 
 def load_config(config_path: str) -> dict:
     path = Path(config_path)
@@ -78,6 +85,7 @@ def load_config(config_path: str) -> dict:
 # Checkpoint helpers (Gap #5 — state persistence)
 # ---------------------------------------------------------------------------
 
+
 def _checkpoint_path(scenario_name: str) -> Path:
     return CHECKPOINT_DIR / f".checkpoint_{scenario_name}.json"
 
@@ -91,9 +99,7 @@ def _save_checkpoint(result: ScenarioResult) -> None:
             json.dump(result.to_dict(), f, indent=2)
         logger.debug("Checkpoint saved: %s", path.name)
     except OSError as exc:
-        logger.warning(
-            "Could not save checkpoint for '%s': %s", result.name, exc
-        )
+        logger.warning("Could not save checkpoint for '%s': %s", result.name, exc)
 
 
 def _load_checkpoint(scenario_name: str) -> Optional[dict]:
@@ -107,13 +113,15 @@ def _load_checkpoint(scenario_name: str) -> Optional[dict]:
         completed = [r["users"] for r in data.get("runs", [])]
         logger.info(
             "Checkpoint found for '%s' — previously completed steps: %s",
-            scenario_name, completed,
+            scenario_name,
+            completed,
         )
         return data
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning(
             "Could not read checkpoint for '%s' (%s) — starting fresh",
-            scenario_name, exc,
+            scenario_name,
+            exc,
         )
         return None
 
@@ -133,6 +141,7 @@ def _clear_checkpoint(scenario_name: str) -> None:
 # Core scenario logic
 # ---------------------------------------------------------------------------
 
+
 def run_scenario(
     scenario_cfg: dict,
     runner: JMeterRunner,
@@ -151,23 +160,24 @@ def run_scenario(
         - Checkpoint save / step (Gap #5)
         - Result file retention  (Gap #9)
     """
-    name          = scenario_cfg["name"]
-    jmx_path      = scenario_cfg["jmx_path"]
-    load_steps    = scenario_cfg["load_steps"]
-    sla_p95       = scenario_cfg["sla"]["p95"]
-    error_thresh  = scenario_cfg["sla"]["error_threshold"]
-    retry_count   = scenario_cfg.get("retry_count", 1)
-    timeout       = scenario_cfg.get("timeout_seconds", 7200)
-    mode          = scenario_cfg.get("mode", "static")
-    cooldown      = scenario_cfg.get("cooldown_seconds", COOLDOWN_DEFAULT_SECONDS)
-    warmup_users  = scenario_cfg.get("warmup_users", WARMUP_USERS_DEFAULT)
-    max_failures  = scenario_cfg.get(
+    name = scenario_cfg["name"]
+    jmx_path = scenario_cfg["jmx_path"]
+    load_steps = scenario_cfg["load_steps"]
+    sla_p95 = scenario_cfg["sla"]["p95"]
+    error_thresh = scenario_cfg["sla"]["error_threshold"]
+    retry_count = scenario_cfg.get("retry_count", 1)
+    timeout = scenario_cfg.get("timeout_seconds", 7200)
+    mode = scenario_cfg.get("mode", "static")
+    cooldown = scenario_cfg.get("cooldown_seconds", COOLDOWN_DEFAULT_SECONDS)
+    warmup_users = scenario_cfg.get("warmup_users", WARMUP_USERS_DEFAULT)
+    max_failures = scenario_cfg.get(
         "max_consecutive_failures", MAX_CONSECUTIVE_FAILURES_DEFAULT
     )
 
     ramp_config: dict = scenario_cfg.get(
         "ramp_strategy",
-        get_default_ramp_strategy(load_steps[0]) if load_steps
+        get_default_ramp_strategy(load_steps[0])
+        if load_steps
         else {"type": "fixed", "value": 60},
     )
 
@@ -184,12 +194,14 @@ def run_scenario(
         checkpoint = _load_checkpoint(name)
         if checkpoint:
             for run_data in checkpoint.get("runs", []):
-                result.runs.append(RunResult(
-                    users=run_data["users"],
-                    metrics=None,          # lightweight — don't reconstruct Metrics
-                    decision=run_data["decision"],
-                    reason=run_data["reason"],
-                ))
+                result.runs.append(
+                    RunResult(
+                        users=run_data["users"],
+                        metrics=None,  # lightweight — don't reconstruct Metrics
+                        decision=run_data["decision"],
+                        reason=run_data["reason"],
+                    )
+                )
                 completed_users.add(run_data["users"])
             result.breakpoint_users = checkpoint.get("breakpoint")
 
@@ -197,7 +209,8 @@ def run_scenario(
                 logger.info(
                     "Checkpoint: scenario '%s' already reached breakpoint at %d users — "
                     "skipping re-run",
-                    name, result.breakpoint_users,
+                    name,
+                    result.breakpoint_users,
                 )
                 return result
 
@@ -205,20 +218,30 @@ def run_scenario(
     logger.info(
         "SCENARIO START: %s | mode=%s | ramp=%s | retry=%d | "
         "timeout=%ds | cooldown=%ds | warmup=%d users",
-        name, mode, ramp_config.get("type"),
-        retry_count, timeout, cooldown, warmup_users,
+        name,
+        mode,
+        ramp_config.get("type"),
+        retry_count,
+        timeout,
+        cooldown,
+        warmup_users,
     )
 
     # ── Warmup probe (Gap #3) ───────────────────────────────────────────────
     if warmup_users > 0 and not completed_users:
         logger.info(
             "Warmup probe: %d users for up to %ds (results discarded)...",
-            warmup_users, min(timeout, 300),
+            warmup_users,
+            min(timeout, 300),
         )
         warmup_rampup = min(WARMUP_RAMPUP_DEFAULT, warmup_users * 3)
         _execute_step(
-            name, jmx_path, warmup_users, warmup_rampup,
-            runner, engine,
+            name,
+            jmx_path,
+            warmup_users,
+            warmup_rampup,
+            runner,
+            engine,
             retry_count=1,
             timeout=min(timeout, 300),
             slaves=slaves,
@@ -233,20 +256,21 @@ def run_scenario(
     # ── Main load escalation loop ───────────────────────────────────────────
     consecutive_failures = 0
 
-    for i, users in enumerate(load_steps):
+    first_pending_idx = 0
+    for idx, step in enumerate(load_steps):
+        if step not in completed_users:
+            first_pending_idx = idx
+            break
 
+    for i, users in enumerate(load_steps):
         # Skip steps already completed in a prior interrupted run.
         if users in completed_users:
-            logger.info(
-                "Skipping %d-user step (completed in previous run)", users
-            )
+            logger.info("Skipping %d-user step (completed in previous run)", users)
             continue
 
         # ── Cooldown between steps (Gap #2) ────────────────────────────────
         # Apply cooldown before every step except the very first one.
-        is_first_real_step = (i == 0 and not completed_users) or (
-            i > 0 and all(u in completed_users for u in load_steps[:i])
-        )
+        is_first_real_step = i == first_pending_idx
         if not is_first_real_step:
             logger.info(
                 "Cooldown: waiting %ds for system recovery before next step...",
@@ -261,12 +285,15 @@ def run_scenario(
                 active_slaves = check_slaves_alive(slaves)
                 logger.info(
                     "Slave health check: %d/%d alive ✓",
-                    len(active_slaves), len(slaves),
+                    len(active_slaves),
+                    len(slaves),
                 )
             except PreflightError as exc:
                 logger.error(
                     "Slave check failed before %d-user step: %s — aborting scenario '%s'",
-                    users, exc, name,
+                    users,
+                    exc,
+                    name,
                 )
                 result.abort_reason = f"Slave failure before {users}-user step: {exc}"
                 _save_checkpoint(result)
@@ -279,9 +306,14 @@ def run_scenario(
         )
 
         run = _execute_step(
-            name, jmx_path, users, rampup,
-            runner, engine,
-            retry_count, timeout,
+            name,
+            jmx_path,
+            users,
+            rampup,
+            runner,
+            engine,
+            retry_count,
+            timeout,
             slaves=active_slaves,
         )
 
@@ -290,13 +322,15 @@ def run_scenario(
             consecutive_failures += 1
             logger.warning(
                 "Step produced no metrics — consecutive failures: %d / %d",
-                consecutive_failures, max_failures,
+                consecutive_failures,
+                max_failures,
             )
             if consecutive_failures >= max_failures:
                 logger.error(
                     "Aborting scenario '%s' after %d consecutive JMeter failures "
                     "(infrastructure issue?)",
-                    name, consecutive_failures,
+                    name,
+                    consecutive_failures,
                 )
                 result.abort_reason = (
                     f"Aborted after {consecutive_failures} consecutive "
@@ -312,15 +346,45 @@ def run_scenario(
         if run.decision == Decision.WARN:
             logger.warning(
                 "WARN at %d users (%s) — re-testing same load before escalating...",
-                users, run.reason,
+                users,
+                run.reason,
             )
-            time.sleep(max(30, cooldown // 2))   # short settle before re-test
+            time.sleep(max(30, cooldown // 2))  # short settle before re-test
             retest = _execute_step(
-                name, jmx_path, users, rampup,
-                runner, engine,
-                retry_count, timeout,
+                name,
+                jmx_path,
+                users,
+                rampup,
+                runner,
+                engine,
+                retry_count,
+                timeout,
                 slaves=active_slaves,
             )
+            if retest.metrics is None:
+                consecutive_failures += 1
+                logger.warning(
+                    "WARN re-test produced no metrics — consecutive failures: %d / %d",
+                    consecutive_failures,
+                    max_failures,
+                )
+                if consecutive_failures >= max_failures:
+                    logger.error(
+                        "Aborting scenario '%s' after %d consecutive failures "
+                        "(including WARN re-test failure)",
+                        name,
+                        consecutive_failures,
+                    )
+                    result.abort_reason = (
+                        f"Aborted after {consecutive_failures} consecutive "
+                        "JMeter failures — including WARN re-test failure"
+                    )
+                    result.runs.append(retest)
+                    _save_checkpoint(result)
+                    break
+            else:
+                consecutive_failures = 0
+
             if retest.decision in (Decision.WARN, Decision.STOP):
                 # Still degraded — treat as a hard stop.
                 logger.warning(
@@ -344,13 +408,13 @@ def run_scenario(
         if run.metrics:
             logger.info(
                 "Decision: %s | Error=%.2f%% | P95=%.0fms | Reason: %s",
-                run.decision, run.metrics.error_percent,
-                run.metrics.p95, run.reason,
+                run.decision,
+                run.metrics.error_percent,
+                run.metrics.p95,
+                run.reason,
             )
         else:
-            logger.warning(
-                "Decision: %s | Reason: %s", run.decision, run.reason
-            )
+            logger.warning("Decision: %s | Reason: %s", run.decision, run.reason)
 
         # ── Checkpoint after every step (Gap #5) ───────────────────────────
         _save_checkpoint(result)
@@ -371,7 +435,7 @@ def run_scenario(
         "SCENARIO END: %s — breakpoint=%s | abort=%s",
         name,
         result.breakpoint_users or "none",
-        result.abort_reason   or "none",
+        result.abort_reason or "none",
     )
 
     # Clear checkpoint on clean completion (no abort, no crash).
@@ -402,10 +466,15 @@ def _execute_step(
     """
     # Use JMX basename + users for CSV naming (Gap #10)
     jmx_basename = Path(jmx_path).stem
-    result_file  = f"results/{jmx_basename}_{users}.csv"
+    safe_name = "".join(c for c in jmx_basename if c.isalnum() or c in ("_", "-"))
+    if not safe_name:
+        safe_name = "unnamed"
+    result_file = f"results/{safe_name}_{users}.csv"
 
     runner.run(
-        jmx_path, result_file, users,
+        jmx_path,
+        result_file,
+        users,
         rampup=rampup,
         slaves=slaves,
         timeout=timeout,
@@ -440,6 +509,7 @@ def _execute_step(
 # Report generation + post-run actions
 # ---------------------------------------------------------------------------
 
+
 def _write_reports(
     results: list[ScenarioResult],
     webhook_url: Optional[str] = None,
@@ -459,7 +529,8 @@ def _write_reports(
         Reporter.generate_json_report(regressions, reg_path)
         logger.warning(
             "⚠ %d regression(s) detected vs baseline — details: %s",
-            len(regressions), reg_path,
+            len(regressions),
+            reg_path,
         )
 
     # Webhook notification (Gap #6).
@@ -467,7 +538,9 @@ def _write_reports(
         extra: dict = {}
         if regressions:
             extra["regressions"] = len(regressions)
-        Reporter.send_webhook_notification(raw, webhook_url, extra_context=extra or None)
+        Reporter.send_webhook_notification(
+            raw, webhook_url, extra_context=extra or None
+        )
 
     # Email notification (Gap #11).
     if smtp_config:
@@ -480,6 +553,7 @@ def _write_reports(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -540,6 +614,16 @@ def main() -> None:
 
     # Step 3: Resolve JMeter path.
     jmeter_path = args.jmeter_path or config.get("jmeter_path", "jmeter")
+    resolved = shutil.which(jmeter_path)
+    if resolved:
+        jmeter_path = resolved
+    elif not Path(jmeter_path).is_file():
+        logger.error(
+            "JMeter executable not found: '%s'. "
+            "Ensure JMeter is installed and in your PATH.",
+            jmeter_path,
+        )
+        sys.exit(1)
 
     # Step 4: Pre-flight checks.
     if not args.skip_preflight:
@@ -554,11 +638,11 @@ def main() -> None:
         logger.info("Pre-flight checks skipped (--skip-preflight)")
 
     # Step 5: Run all scenarios.
-    runner  = JMeterRunner(jmeter_path=jmeter_path)
-    resume  = not args.no_resume
-    webhook = args.webhook_url or (
-        config.get("notification", {}) or {}
-    ).get("webhook_url")
+    runner = JMeterRunner(jmeter_path=jmeter_path)
+    resume = not args.no_resume
+    webhook = args.webhook_url or (config.get("notification", {}) or {}).get(
+        "webhook_url"
+    )
 
     scenario_results: list[ScenarioResult] = [
         run_scenario(cfg, runner, slaves=slaves, resume=resume)

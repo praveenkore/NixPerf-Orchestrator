@@ -10,6 +10,7 @@ Metrics computed:
     - avg_response_time, min_response_time, max_response_time
     - p95, p99  (via reservoir sampling — accurate approximation for large files)
 """
+
 import csv
 import logging
 import random
@@ -86,7 +87,8 @@ class ResultsParser:
                     aggregator.consume(batch)
                     batch.clear()
                     logger.debug(
-                        "Processed batch — total so far: %d rows", aggregator.total_count
+                        "Processed batch — total so far: %d rows",
+                        aggregator.total_count,
                     )
 
             # Flush any remaining rows
@@ -120,33 +122,40 @@ class ResultsParser:
             False — file looks incomplete; a WARNING has been logged.
         """
         try:
+            line_count = 0
+            last_line = ""
             with self.file_path.open("r", encoding="utf-8", errors="replace") as f:
-                all_lines = f.readlines()
+                f.readline()
+                for line in f:
+                    if line.strip():
+                        line_count += 1
+                        last_line = line
 
-            # Strip blank lines; first line is the CSV header.
-            data_lines = [ln for ln in all_lines[1:] if ln.strip()]
-
-            if len(data_lines) < MIN_VALID_ROWS:
+            if line_count < MIN_VALID_ROWS:
                 logger.warning(
                     "JTL file has only %d data row(s) — possibly incomplete or "
                     "truncated (need >= %d): %s",
-                    len(data_lines), MIN_VALID_ROWS, self.file_path.name,
+                    line_count,
+                    MIN_VALID_ROWS,
+                    self.file_path.name,
                 )
                 return False
 
-            last_line = data_lines[-1]
             if last_line.count(",") < MIN_EXPECTED_COLUMNS:
                 logger.warning(
                     "JTL last row appears truncated (%d comma(s), expected >= %d): %s",
-                    last_line.count(","), MIN_EXPECTED_COLUMNS, self.file_path.name,
+                    last_line.count(","),
+                    MIN_EXPECTED_COLUMNS,
+                    self.file_path.name,
                 )
                 return False
 
             return True
 
         except Exception as exc:  # noqa: BLE001
-            # Never let an integrity check break the parse pipeline.
-            logger.debug("File integrity check skipped (%s): %s", exc, self.file_path.name)
+            logger.debug(
+                "File integrity check skipped (%s): %s", exc, self.file_path.name
+            )
             return True
 
     @staticmethod
@@ -199,6 +208,18 @@ class _RunningAggregator:
 
     def to_metrics(self) -> Metrics:
         """Build the final Metrics dataclass from accumulated statistics."""
+        if self.total_count == 0:
+            return Metrics(
+                total_requests=0,
+                error_count=0,
+                error_percent=0.0,
+                avg_response_time=0.0,
+                min_response_time=0.0,
+                max_response_time=0.0,
+                p95=0.0,
+                p99=0.0,
+            )
+        sorted_reservoir = sorted(self.reservoir)
         return Metrics(
             total_requests=self.total_count,
             error_count=self.error_count,
@@ -206,14 +227,18 @@ class _RunningAggregator:
             avg_response_time=self._sum / self.total_count,
             min_response_time=float(self._min),
             max_response_time=float(self._max),
-            p95=self._percentile(95),
-            p99=self._percentile(99),
+            p95=self._percentile_from_sorted(sorted_reservoir, 95),
+            p99=self._percentile_from_sorted(sorted_reservoir, 99),
         )
 
-    def _percentile(self, pct: int) -> float:
-        """Estimate the Nth percentile from the reservoir sample."""
-        if not self.reservoir:
+    @staticmethod
+    def _percentile_from_sorted(sorted_data: list[int], pct: int) -> float:
+        """Estimate the Nth percentile from a pre-sorted list using linear interpolation."""
+        if not sorted_data:
             return 0.0
-        sorted_reservoir = sorted(self.reservoir)
-        idx = max(0, int(len(sorted_reservoir) * pct / 100) - 1)
-        return float(sorted_reservoir[idx])
+        n = len(sorted_data)
+        k = (pct / 100) * (n - 1)
+        f = int(k)
+        c = f + 1 if f + 1 < n else f
+        d = k - f
+        return float(sorted_data[f] + d * (sorted_data[c] - sorted_data[f]))

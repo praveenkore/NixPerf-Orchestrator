@@ -181,7 +181,7 @@ The decision engine now has three states:
 
 ### 3.5 Per-Step Slave Health Checks
 
-At startup, all slave connectivity is validated once. In addition, **before every load step**, the orchestrator re-probes each slave on RMI ports `1099` and `50000`.
+At startup, all slave connectivity is validated once (checks run in parallel for speed). In addition, **before every load step**, the orchestrator re-probes each slave on RMI ports `1099` and `50000`.
 
 - Unreachable slaves are **excluded** from that step (reduced pool, logged as WARNING).
 - If fewer than **50 %** of the original slave pool is alive, the step is **aborted** and the scenario records an `abort_reason`.
@@ -203,6 +203,8 @@ The notification includes:
 - Per-scenario summary (breakpoint users, abort reason if any).
 - Number of P95 regressions detected vs baseline (if any).
 - Timestamp.
+
+**Security:** Webhook URLs are validated to enforce HTTPS-only and reject requests to private, loopback, or reserved IP addresses. Non-HTTPS URLs or internal network addresses will be silently skipped with a warning log.
 
 ```yaml
 # In scenarios.yaml
@@ -229,13 +231,15 @@ smtp:
   host: smtp.gmail.com        # SMTP server address
   port: 587                   # Port (usually 587 for STARTTLS)
   user: your-email@gmail.com  # Optional: SMTP username
-  password: your-app-password # Optional: SMTP password
+  password: env:SMTP_PASSWORD # Use env: prefix to read from environment variable
   sender: NixPerf <nixperf@domain.com>
   recipient: team@domain.com
 ```
 
+> **Security:** Use the `env:VARIABLE_NAME` syntax for the `password` field to avoid storing plaintext credentials in configuration files. Set the environment variable before running the orchestrator.
+
 **Troubleshooting:**
-- **STARTTLS**: The orchestrator uses STARTTLS by default. Ensure your relay supports it if using port 587.
+- **STARTTLS**: The orchestrator uses STARTTLS with a verified SSL context by default. Ensure your relay supports it if using port 587.
 - **App Passwords**: If using Gmail, you must use an "App Password" rather than your primary Google password.
 - **Multiple Recipients**: For now, specify a single recipient or a distribution-list email.
 
@@ -285,7 +289,7 @@ For high-load tests generating millions of rows, the result parser reads the fil
 parser = ResultsParser(result_file, batch_size=20_000, reservoir_size=200_000)
 ```
 
-> **Percentile accuracy**: Reservoir sampling (Vitter's Algorithm R) provides P95/P99 estimates within ~1 % of exact values for files with 1 M+ rows.
+> **Percentile accuracy**: Reservoir sampling (Vitter's Algorithm R) with linear interpolation provides accurate P95/P99 estimates. The reservoir is sorted once and reused for both percentiles.
 
 **File integrity check**: Before parsing, the orchestrator verifies that the result file has at least 10 data rows and that the last row is not truncated. A `WARNING` is logged for suspicious files, but parsing continues — incomplete results are preferable to no results.
 

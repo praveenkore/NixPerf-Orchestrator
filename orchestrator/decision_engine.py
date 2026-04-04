@@ -10,6 +10,7 @@ Decision states:
     - WARN:    Approaching SLA limits — re-test same step before escalating.
     - STOP:    SLA breached or trend predicts imminent breach — halt escalation.
 """
+
 import logging
 from enum import Enum
 from typing import Optional
@@ -33,15 +34,18 @@ ADAPTIVE_STOP_PREDICTION_FACTOR = 0.90
 # Adaptive warn: if P95 is rising faster than this fraction of the SLA limit per step.
 ADAPTIVE_RAPID_RISE_FACTOR = 0.10
 
+# Maximum number of Metrics entries retained in history for adaptive mode.
+MAX_HISTORY_SIZE = 100
+
 
 class Decision(str, Enum):
     PROCEED = "PROCEED"
-    WARN    = "WARN"    # approaching threshold — re-test before escalating
-    STOP    = "STOP"
+    WARN = "WARN"  # approaching threshold — re-test before escalating
+    STOP = "STOP"
 
 
 class EscalationMode(str, Enum):
-    STATIC   = "static"
+    STATIC = "static"
     ADAPTIVE = "adaptive"
 
 
@@ -75,7 +79,8 @@ class DecisionEngine:
             logger.info(
                 "Adaptive escalation mode enabled (warn_factor=%.2f, "
                 "trend window=%d steps)",
-                warn_factor, ADAPTIVE_TREND_WINDOW,
+                warn_factor,
+                ADAPTIVE_TREND_WINDOW,
             )
 
     # ------------------------------------------------------------------
@@ -92,6 +97,8 @@ class DecisionEngine:
             return Decision.STOP, "No metrics collected — JMeter may have failed"
 
         self._history.append(metrics)
+        if len(self._history) > MAX_HISTORY_SIZE:
+            self._history = self._history[-MAX_HISTORY_SIZE:]
 
         if self.mode == EscalationMode.ADAPTIVE:
             return self._evaluate_adaptive(metrics)
@@ -126,7 +133,7 @@ class DecisionEngine:
 
         # ── WARN band (approaching limit) ───────────────────────────────────
         warn_error_limit = self.error_threshold_percent * self.warn_factor
-        warn_p95_limit   = self.sla_p95 * self.warn_factor
+        warn_p95_limit = self.sla_p95 * self.warn_factor
 
         if metrics.error_percent > warn_error_limit:
             return (
@@ -172,30 +179,36 @@ class DecisionEngine:
             logger.debug(
                 "Adaptive: only %d history point(s) — falling back to static evaluation "
                 "(need %d)",
-                len(self._history), ADAPTIVE_MIN_HISTORY,
+                len(self._history),
+                ADAPTIVE_MIN_HISTORY,
             )
             return static_decision, static_reason
 
         # ── Compute slopes over the recent trend window ───────────────────────
         window = self._history[-ADAPTIVE_TREND_WINDOW:]
-        p95_values   = [m.p95           for m in window]
+        p95_values = [m.p95 for m in window]
         error_values = [m.error_percent for m in window]
 
-        p95_slope   = self._linear_slope(p95_values)
+        p95_slope = self._linear_slope(p95_values)
         error_slope = self._linear_slope(error_values)
 
-        predicted_p95   = metrics.p95           + p95_slope
+        predicted_p95 = metrics.p95 + p95_slope
         predicted_error = metrics.error_percent + error_slope
 
         logger.debug(
             "Adaptive trend: P95 slope=+%.0fms/step (predicted next=%.0fms) | "
             "Error slope=+%.2f%%/step (predicted next=%.2f%%)",
-            p95_slope, predicted_p95, error_slope, predicted_error,
+            p95_slope,
+            predicted_p95,
+            error_slope,
+            predicted_error,
         )
 
         # ── Pre-emptive STOP if next step is predicted to breach the SLA ─────
-        stop_p95_threshold   = self.sla_p95                  * ADAPTIVE_STOP_PREDICTION_FACTOR
-        stop_error_threshold = self.error_threshold_percent  * ADAPTIVE_STOP_PREDICTION_FACTOR
+        stop_p95_threshold = self.sla_p95 * ADAPTIVE_STOP_PREDICTION_FACTOR
+        stop_error_threshold = (
+            self.error_threshold_percent * ADAPTIVE_STOP_PREDICTION_FACTOR
+        )
 
         if predicted_p95 > stop_p95_threshold:
             return (

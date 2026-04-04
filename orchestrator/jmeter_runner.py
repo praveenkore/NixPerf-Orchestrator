@@ -10,6 +10,7 @@ Changes from original:
       run to finish.
     - Retry delay is unchanged at 5 s; all other behaviour is backward-compatible.
 """
+
 import logging
 import re
 import subprocess
@@ -41,7 +42,11 @@ def _parse_summary_line(line: str) -> None:
         logger.info(
             "  ↳ Live progress — samples: %s | throughput: %s/s | "
             "avg: %sms | errors: %s (%.1f%%)",
-            samples, rate, avg_ms, errors, float(err_pct),
+            samples,
+            rate,
+            avg_ms,
+            errors,
+            float(err_pct),
         )
 
 
@@ -84,10 +89,14 @@ class JMeterRunner:
         command = self._build_command(jmx_path, result_path, users, rampup, slaves)
 
         output = ""
-        for attempt in range(1, retry_count + 2):  # +2: range exclusive + initial attempt
+        for attempt in range(
+            1, retry_count + 2
+        ):  # +2: range exclusive + initial attempt
             logger.info(
                 "Executing (attempt %d/%d): %s",
-                attempt, retry_count + 1, " ".join(command),
+                attempt,
+                retry_count + 1,
+                " ".join(command),
             )
 
             success, output = self._execute(command, timeout)
@@ -123,6 +132,7 @@ class JMeterRunner:
             (success, captured_stdout_text)
         """
         stdout_lines: list[str] = []
+        stdout_lock = threading.Lock()
 
         try:
             process = subprocess.Popen(
@@ -134,14 +144,17 @@ class JMeterRunner:
 
             def _drain_stdout() -> None:
                 """Read stdout line-by-line and forward to logger."""
-                for line in process.stdout:  # type: ignore[union-attr]
-                    stripped = line.rstrip()
-                    if stripped:
-                        stdout_lines.append(stripped)
-                        logger.debug("[jmeter] %s", stripped)
-                        # Surface summary lines at INFO so they're visible without DEBUG.
-                        if "summary" in stripped.lower():
-                            _parse_summary_line(stripped)
+                try:
+                    for line in process.stdout:  # type: ignore[union-attr]
+                        stripped = line.rstrip()
+                        if stripped:
+                            with stdout_lock:
+                                stdout_lines.append(stripped)
+                            logger.debug("[jmeter] %s", stripped)
+                            if "summary" in stripped.lower():
+                                _parse_summary_line(stripped)
+                except ValueError:
+                    pass
 
             reader = threading.Thread(target=_drain_stdout, daemon=True)
             reader.start()
@@ -150,14 +163,16 @@ class JMeterRunner:
                 process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 process.kill()
-                reader.join(timeout=5)
-                logger.error(
-                    "JMeter timed out after %ds — process killed", timeout
-                )
-                return False, f"Timeout after {timeout}s"
+                process.wait(timeout=5)
+                reader.join(timeout=15)
+                with stdout_lock:
+                    captured = "\n".join(stdout_lines)
+                logger.error("JMeter timed out after %ds — process killed", timeout)
+                return False, captured or f"Timeout after {timeout}s"
 
-            reader.join(timeout=10)
-            full_output = "\n".join(stdout_lines)
+            reader.join(timeout=30)
+            with stdout_lock:
+                full_output = "\n".join(stdout_lines)
 
             if process.returncode != 0:
                 stderr_text = process.stderr.read() if process.stderr else ""  # type: ignore[union-attr]
@@ -189,8 +204,10 @@ class JMeterRunner:
         command = [
             self.jmeter_path,
             "-n",
-            "-t", jmx_path,
-            "-l", result_path,
+            "-t",
+            jmx_path,
+            "-l",
+            result_path,
             f"-Jusers={users}",
             f"-Jrampup={rampup}",
         ]

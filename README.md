@@ -195,6 +195,11 @@ Intermediate results are saved to `results/<scenario>_<users>_<timestamp>.csv`.
 - All configuration is file-based with no runtime user input.
 - Slave connectivity is validated before any test execution.
 - Time synchronization (NTP/Chrony) is required across all nodes for accurate distributed timestamps.
+- Webhook notifications enforce HTTPS-only and reject private/loopback/reserved IP addresses.
+- HTML reports escape all user-controlled values to prevent cross-site scripting (XSS).
+- JMeter executable path is resolved and validated before execution.
+- SMTP passwords support `env:VAR_NAME` references to avoid storing plaintext credentials in config.
+- Result file paths are sanitized to prevent path traversal.
 
 For detailed slave setup, persistent kernel tuning, and RMI port configuration, refer to [HELP.md](./HELP.md).
 

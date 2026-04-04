@@ -12,6 +12,8 @@ Additional public helper (used per load step in main.py):
     returns the list of currently reachable slaves and raises PreflightError
     if too many have gone offline.
 """
+
+import concurrent.futures
 import logging
 import os
 import shutil
@@ -134,14 +136,22 @@ def check_slaves_alive(
         return []
 
     alive: list[str] = []
-    for slave in slaves:
-        try:
-            _check_slave_connectivity(slave, ports=ports)
-            alive.append(slave)
-        except PreflightError:
-            logger.warning(
-                "Slave %s is unreachable — excluding from this load step", slave
-            )
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(slaves), 20)
+    ) as executor:
+        future_to_slave = {
+            executor.submit(_check_slave_connectivity, slave, ports): slave
+            for slave in slaves
+        }
+        for future in concurrent.futures.as_completed(future_to_slave):
+            slave = future_to_slave[future]
+            try:
+                future.result()
+                alive.append(slave)
+            except PreflightError:
+                logger.warning(
+                    "Slave %s is unreachable — excluding from this load step", slave
+                )
 
     alive_fraction = len(alive) / len(slaves)
     if alive_fraction < alive_threshold:
@@ -155,7 +165,8 @@ def check_slaves_alive(
         logger.warning(
             "Reduced slave pool for this step: %d/%d alive — "
             "load will be distributed across fewer nodes",
-            len(alive), len(slaves),
+            len(alive),
+            len(slaves),
         )
     else:
         logger.debug("All %d slave(s) are alive ✓", len(slaves))
