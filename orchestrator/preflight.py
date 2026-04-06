@@ -15,7 +15,6 @@ Additional public helper (used per load step in main.py):
 
 import concurrent.futures
 import logging
-import os
 import shutil
 import socket
 from pathlib import Path
@@ -87,24 +86,24 @@ def _check_result_dir() -> None:
 
 
 def _check_disk_space() -> None:
-    """Check that at least MIN_DISK_SPACE_MB is available."""
+    """Check that at least MIN_DISK_SPACE_MB is available.
+
+    PERF-04: Uses shutil.disk_usage() which works on all platforms
+    (Linux, macOS, Windows) instead of the Unix-only os.statvfs().
+    """
     try:
-        stat = os.statvfs(".") if hasattr(os, "statvfs") else None
-        if stat:
-            free_mb = (stat.f_bavail * stat.f_frsize) / (1024 * 1024)
-            if free_mb < MIN_DISK_SPACE_MB:
-                raise PreflightError(
-                    f"Low disk space: {free_mb:.0f} MB available, "
-                    f"need at least {MIN_DISK_SPACE_MB} MB"
-                )
-            logger.debug("Disk space OK: %.0f MB free", free_mb)
-        else:
-            # Windows fallback — skip detailed check
-            logger.debug("Disk space check skipped (Windows)")
+        usage = shutil.disk_usage(".")
+        free_mb = usage.free / (1024 * 1024)
+        if free_mb < MIN_DISK_SPACE_MB:
+            raise PreflightError(
+                f"Low disk space: {free_mb:.0f} MB available, "
+                f"need at least {MIN_DISK_SPACE_MB} MB"
+            )
+        logger.debug("Disk space OK: %.0f MB free", free_mb)
     except PreflightError:
         raise
-    except Exception:
-        logger.debug("Disk space check skipped (not supported)")
+    except Exception as exc:
+        logger.debug("Disk space check skipped: %s", exc)
 
 
 def check_slaves_alive(

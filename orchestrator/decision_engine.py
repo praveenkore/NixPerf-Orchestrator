@@ -12,6 +12,7 @@ Decision states:
 """
 
 import logging
+from collections import deque
 from enum import Enum
 from typing import Optional
 
@@ -72,8 +73,9 @@ class DecisionEngine:
         self.mode = EscalationMode(mode)
         self.warn_factor = warn_factor
 
-        # History of all Metrics objects evaluated so far — used by adaptive mode.
-        self._history: list[Metrics] = []
+        # History of evaluated Metrics — used by adaptive mode.
+        # PERF-03: deque(maxlen) enforces the cap in O(1) without list re-allocation.
+        self._history: deque[Metrics] = deque(maxlen=MAX_HISTORY_SIZE)
 
         if self.mode == EscalationMode.ADAPTIVE:
             logger.info(
@@ -96,9 +98,8 @@ class DecisionEngine:
         if metrics is None:
             return Decision.STOP, "No metrics collected — JMeter may have failed"
 
+        # deque(maxlen=MAX_HISTORY_SIZE) evicts the oldest entry automatically.
         self._history.append(metrics)
-        if len(self._history) > MAX_HISTORY_SIZE:
-            self._history = self._history[-MAX_HISTORY_SIZE:]
 
         if self.mode == EscalationMode.ADAPTIVE:
             return self._evaluate_adaptive(metrics)
@@ -185,7 +186,8 @@ class DecisionEngine:
             return static_decision, static_reason
 
         # ── Compute slopes over the recent trend window ───────────────────────
-        window = self._history[-ADAPTIVE_TREND_WINDOW:]
+        # deque does not support slice notation; convert to list first.
+        window = list(self._history)[-ADAPTIVE_TREND_WINDOW:]
         p95_values = [m.p95 for m in window]
         error_values = [m.error_percent for m in window]
 

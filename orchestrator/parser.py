@@ -112,35 +112,39 @@ class ResultsParser:
     def _check_file_integrity(self) -> bool:
         """Warn (but never raise) if the JTL file looks truncated or suspiciously small.
 
-        Checks performed:
-            1. File contains at least MIN_VALID_ROWS data rows (excluding header).
-            2. The last data row has at least MIN_EXPECTED_COLUMNS comma-separated
-               fields — a truncated write often cuts the final line short.
+        PERF-01: Previously this method did an O(n) full scan (open + read every
+        line) and then parse() immediately did a second full scan.  The new
+        implementation is O(1):
+            1. os.stat() for a quick size sanity check (replaces row-count scan).
+            2. Seek to the last 512 bytes to inspect only the final line for
+               truncation (replaces reading the entire file to reach the last row).
 
         Returns:
             True  — file looks complete.
             False — file looks incomplete; a WARNING has been logged.
         """
         try:
-            line_count = 0
-            last_line = ""
-            with self.file_path.open("r", encoding="utf-8", errors="replace") as f:
-                f.readline()
-                for line in f:
-                    if line.strip():
-                        line_count += 1
-                        last_line = line
-
-            if line_count < MIN_VALID_ROWS:
+            file_size = self.file_path.stat().st_size
+            # A valid JTL needs at least: header row + MIN_VALID_ROWS data rows.
+            # A minimal row is ~30 bytes; add ~80 bytes for the header.
+            min_expected_bytes = 80 + MIN_VALID_ROWS * 30
+            if file_size < min_expected_bytes:
                 logger.warning(
-                    "JTL file has only %d data row(s) — possibly incomplete or "
-                    "truncated (need >= %d): %s",
-                    line_count,
+                    "JTL file is only %d bytes — possibly incomplete or truncated "
+                    "(expected >= %d bytes for %d rows): %s",
+                    file_size,
+                    min_expected_bytes,
                     MIN_VALID_ROWS,
                     self.file_path.name,
                 )
                 return False
 
+            # Read the last 512 bytes in binary mode to check the final row.
+            with self.file_path.open("rb") as fbin:
+                fbin.seek(max(0, file_size - 512))
+                tail = fbin.read().decode("utf-8", errors="replace")
+
+            last_line = tail.rstrip().splitlines()[-1] if tail.strip() else ""
             if last_line.count(",") < MIN_EXPECTED_COLUMNS:
                 logger.warning(
                     "JTL last row appears truncated (%d comma(s), expected >= %d): %s",

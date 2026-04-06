@@ -9,7 +9,11 @@ Checks:
     - error_threshold is between 0 and 100
 """
 import logging
+import re
 from pathlib import Path
+
+# SEC-03: scenario names are used in file paths — restrict to safe characters.
+_SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9_\-]{1,64}$')
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +24,11 @@ class ConfigValidationError(Exception):
 
 def validate_config(config: dict) -> None:
     """Validate the entire config dict. Raises ConfigValidationError on issues."""
+    # LOG-04: yaml.safe_load returns None for an empty file; guard before key lookup.
+    if not isinstance(config, dict):
+        raise ConfigValidationError(
+            f"Config must be a YAML mapping, got: {type(config).__name__}"
+        )
     if "scenarios" not in config or not isinstance(config["scenarios"], list):
         raise ConfigValidationError("Config must contain a 'scenarios' list")
 
@@ -44,9 +53,11 @@ def validate_config(config: dict) -> None:
             raise ConfigValidationError("'notification' must be a dictionary")
         if "webhook_url" in notif:
             url = notif["webhook_url"]
-            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            # SEC-05: only HTTPS is accepted at runtime (reporting._validate_webhook_url
+            # rejects HTTP silently); fail fast here to surface misconfiguration early.
+            if not isinstance(url, str) or not url.startswith("https://"):
                 raise ConfigValidationError(
-                    f"notification.webhook_url must be a valid HTTP/S URL, got '{url}'"
+                    f"notification.webhook_url must use HTTPS, got: '{url}'"
                 )
 
     logger.info("Config validation passed ✓ (%d scenarios)", len(config["scenarios"]))
@@ -62,6 +73,14 @@ def _validate_scenario(scenario: dict, idx: int) -> None:
 
     name = scenario["name"]
     prefix = f"scenario '{name}'"
+
+    # SEC-03: scenario name is embedded in checkpoint and result file paths;
+    # restrict to alphanumeric/underscore/hyphen to prevent path traversal.
+    if not _SAFE_NAME_RE.match(name):
+        raise ConfigValidationError(
+            f"{prefix}: scenario 'name' must be 1–64 alphanumeric, underscore, "
+            f"or hyphen characters (got: '{name}')"
+        )
 
     # jmx_path exists
     jmx_path = Path(scenario["jmx_path"])

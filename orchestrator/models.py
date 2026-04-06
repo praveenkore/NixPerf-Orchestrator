@@ -1,6 +1,7 @@
 """
 models.py - Shared dataclasses for type-safe data exchange between modules.
 """
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -18,7 +19,8 @@ class Metrics:
     p99: float
 
     def to_dict(self) -> dict:
-        return self.__dict__
+        # LOG-08: return a deep copy so callers cannot mutate internal state
+        return dataclasses.asdict(self)
 
 
 @dataclass

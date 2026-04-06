@@ -9,8 +9,24 @@ Changes from original:
       so operators can monitor throughput / error rate without waiting for the
       run to finish.
     - Retry delay is unchanged at 5 s; all other behaviour is backward-compatible.
+
+Security / reliability fixes (vs previous revision):
+    SEC-01  — Added a dedicated stderr drain thread.  Previously stderr was
+              collected only after the process exited.  If JMeter wrote more
+              than ~64 KB to stderr (crash stack trace, verbose GC log) the OS
+              pipe buffer would fill and the process would block forever while
+              the main thread waited in process.wait() — a classic deadlock.
+    PERF-02 — stdout_lines and stderr_lines are now bounded deques
+              (max _MAX_CAPTURED_LINES entries each).  Long 2-hour runs with
+              verbose JMeter output no longer accumulate unbounded memory.
+    PERF-05 — Removed the per-line threading.Lock() around stdout_lines.append().
+              There is exactly one writer (_drain_stdout) and the main thread
+              only reads stdout_lines after reader.join(), so no concurrent
+              access is possible.  The lock was protecting against a race that
+              could not occur.  stderr_lines follows the same pattern.
 """
 
+import collections
 import logging
 import re
 import subprocess
@@ -23,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 7200  # 2 hours
 DEFAULT_RETRY_COUNT = 1
+
+# PERF-02: cap the number of lines retained in memory per run.
+# Lines beyond this limit are still forwarded to the logger (debug level)
+# but are not kept in the in-memory buffer.
+_MAX_CAPTURED_LINES = 500
 
 # Matches both JMeter "summary =" (cumulative) and "summary +" (interval) lines.
 # Example:
@@ -123,16 +144,22 @@ class JMeterRunner:
     def _execute(self, command: list[str], timeout: int) -> tuple[bool, str]:
         """Launch JMeter as a subprocess and stream its output in real time.
 
-        Uses a background daemon thread to drain stdout continuously so that:
+        Uses two background daemon threads to drain stdout and stderr
+        concurrently so that:
           - The terminal / log file shows live progress during long runs.
           - JMeter summary lines trigger structured INFO log entries.
           - The main thread can enforce a wall-clock timeout independently.
+          - SEC-01: stderr is continuously drained, preventing the OS pipe
+            buffer from filling and deadlocking the process.
 
         Returns:
             (success, captured_stdout_text)
         """
-        stdout_lines: list[str] = []
-        stdout_lock = threading.Lock()
+        # PERF-02: bounded deques — memory stays constant regardless of run length.
+        # PERF-05: no lock needed; each deque has exactly one writer thread and is
+        # read only after the respective thread is joined (happens-before guarantee).
+        stdout_lines: collections.deque = collections.deque(maxlen=_MAX_CAPTURED_LINES)
+        stderr_lines: collections.deque = collections.deque(maxlen=_MAX_CAPTURED_LINES)
 
         try:
             process = subprocess.Popen(
@@ -148,16 +175,28 @@ class JMeterRunner:
                     for line in process.stdout:  # type: ignore[union-attr]
                         stripped = line.rstrip()
                         if stripped:
-                            with stdout_lock:
-                                stdout_lines.append(stripped)
+                            stdout_lines.append(stripped)
                             logger.debug("[jmeter] %s", stripped)
                             if "summary" in stripped.lower():
                                 _parse_summary_line(stripped)
                 except ValueError:
                     pass
 
+            def _drain_stderr() -> None:
+                """SEC-01: drain stderr continuously to prevent pipe-buffer deadlock."""
+                try:
+                    for line in process.stderr:  # type: ignore[union-attr]
+                        stripped = line.rstrip()
+                        if stripped:
+                            stderr_lines.append(stripped)
+                            logger.debug("[jmeter-err] %s", stripped)
+                except ValueError:
+                    pass
+
             reader = threading.Thread(target=_drain_stdout, daemon=True)
+            err_reader = threading.Thread(target=_drain_stderr, daemon=True)
             reader.start()
+            err_reader.start()
 
             try:
                 process.wait(timeout=timeout)
@@ -165,17 +204,17 @@ class JMeterRunner:
                 process.kill()
                 process.wait(timeout=5)
                 reader.join(timeout=15)
-                with stdout_lock:
-                    captured = "\n".join(stdout_lines)
+                err_reader.join(timeout=15)
+                captured = "\n".join(stdout_lines)
                 logger.error("JMeter timed out after %ds — process killed", timeout)
                 return False, captured or f"Timeout after {timeout}s"
 
             reader.join(timeout=30)
-            with stdout_lock:
-                full_output = "\n".join(stdout_lines)
+            err_reader.join(timeout=30)
+            full_output = "\n".join(stdout_lines)
 
             if process.returncode != 0:
-                stderr_text = process.stderr.read() if process.stderr else ""  # type: ignore[union-attr]
+                stderr_text = "\n".join(stderr_lines)
                 logger.error(
                     "JMeter failed (exit %d). stderr: %s",
                     process.returncode,

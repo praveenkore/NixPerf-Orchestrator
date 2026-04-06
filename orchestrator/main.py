@@ -12,6 +12,28 @@ Autonomous operation improvements vs original:
     8.  Baseline comparison — P95 regressions flagged against a previous golden run.
     9.  Result retention    — old CSV files pruned automatically after each step.
 
+Security / reliability fixes (vs previous revision):
+    SEC-04  — Slave addresses supplied via --slaves or config are now validated:
+              loopback, link-local, and multicast IPs are rejected; hostnames must
+              match RFC-1123 syntax.  Prevents internal-network probing (SSRF).
+    SEC-08  — load_config() restricts --config to .yaml/.yml extensions and guards
+              against yaml.safe_load() returning None for an empty file.
+    LOG-01  — clean_old_results() is now called with the JMX-derived safe name
+              (matching the actual result CSV filename prefix) instead of the
+              scenario name.  Previously no files were ever deleted.
+    LOG-02  — On checkpoint resume, Metrics objects are reconstructed and pushed
+              into DecisionEngine._history so adaptive mode has full trend context.
+    LOG-03  — The WARN run's history entry is popped before the re-test executes,
+              preventing the same load level from appearing twice in the slope window.
+    LOG-05  — Result CSV filenames now include both the scenario name and the JMX
+              basename, preventing two scenarios that share a JMX file from
+              overwriting each other's results at the same user count.
+    LOG-06  — Replaced the fragile first_pending_idx calculation with a simple
+              first_real_step_done flag; eliminates a spurious cooldown before
+              the first actually-executed step in a resumed run.
+    LOG-07  — The original WARN run is appended to result.runs before the re-test
+              so the full audit trail (WARN → re-test outcome) is preserved.
+
 Usage:
     python -m orchestrator.main
     python -m orchestrator.main --config path/to/scenarios.yaml
@@ -20,8 +42,10 @@ Usage:
 """
 
 import argparse
+import ipaddress
 import json
 import logging
+import re
 import shutil
 import sys
 import time
@@ -66,6 +90,12 @@ WARMUP_SETTLE_SECONDS = 30  # post-warmup settle time before step 1
 COOLDOWN_DEFAULT_SECONDS = 60  # between load steps
 MAX_CONSECUTIVE_FAILURES_DEFAULT = 2  # infra-failure abort threshold
 
+# SEC-04: RFC-1123 hostname pattern used to validate slave addresses.
+_SLAVE_HOSTNAME_RE = re.compile(
+    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)*"
+    r"[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?$"
+)
+
 
 # ---------------------------------------------------------------------------
 # Config loading
@@ -73,12 +103,55 @@ MAX_CONSECUTIVE_FAILURES_DEFAULT = 2  # infra-failure abort threshold
 
 
 def load_config(config_path: str) -> dict:
-    path = Path(config_path)
+    # SEC-08: restrict to YAML files; prevents --config /etc/passwd style reads.
+    path = Path(config_path).resolve()
+    if path.suffix not in (".yaml", ".yml"):
+        logger.error(
+            "Config must be a .yaml or .yml file: %s", config_path
+        )
+        sys.exit(1)
     if not path.exists():
         logger.error("Config file not found: %s", config_path)
         sys.exit(1)
     with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        data = yaml.safe_load(f)
+    # SEC-08 / LOG-04: yaml.safe_load returns None for an empty file.
+    if data is None:
+        logger.error(
+            "Config file is empty or contains no valid YAML: %s", config_path
+        )
+        sys.exit(1)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# SEC-04: Slave address validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_slave_address(addr: str) -> None:
+    """Reject loopback / link-local / multicast addresses and malformed inputs.
+
+    Args:
+        addr: A hostname or IP address string from --slaves or config.
+
+    Raises:
+        ValueError: If the address fails validation.
+    """
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        # Not a bare IP — validate as a hostname.
+        if not _SLAVE_HOSTNAME_RE.match(addr):
+            raise ValueError(
+                f"Slave address is not a valid hostname or IP: '{addr}'"
+            )
+        return  # valid hostname — accepted
+    # Reject dangerous IP ranges.
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast:
+        raise ValueError(
+            f"Slave address cannot be loopback / link-local / multicast: '{addr}'"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +223,7 @@ def run_scenario(
 ) -> ScenarioResult:
     """Execute all load steps for a single scenario and return its result.
 
-    Autonomous operation features added here:
+    Autonomous operation features:
         - Resume from checkpoint (Gap #5)
         - Warmup probe          (Gap #3)
         - Cooldown between steps(Gap #2)
@@ -188,16 +261,37 @@ def run_scenario(
     )
     result = ScenarioResult(name=name)
 
+    # LOG-01 / LOG-05: derive file-system safe names once, reuse throughout.
+    # Result files are named  results/<safe_scenario>_<safe_jmx>_<users>.csv
+    # and clean_old_results() uses safe_jmx_name as the glob prefix.
+    jmx_basename = Path(jmx_path).stem
+    safe_jmx_name = (
+        "".join(c for c in jmx_basename if c.isalnum() or c in ("_", "-")) or "unnamed"
+    )
+    safe_scenario_name = (
+        "".join(c for c in name if c.isalnum() or c in ("_", "-")) or "unnamed"
+    )
+
     # ── Resume from checkpoint ──────────────────────────────────────────────
     completed_users: set[int] = set()
     if resume:
         checkpoint = _load_checkpoint(name)
         if checkpoint:
             for run_data in checkpoint.get("runs", []):
+                # LOG-02: reconstruct Metrics and warm up engine._history so
+                # adaptive mode has full trend context after a restart.
+                m_data = run_data.get("metrics") or {}
+                metrics_obj: Optional[Metrics] = None
+                if m_data and m_data.get("total_requests", 0) > 0:
+                    try:
+                        metrics_obj = Metrics(**m_data)
+                        engine._history.append(metrics_obj)
+                    except (TypeError, KeyError):
+                        pass
                 result.runs.append(
                     RunResult(
                         users=run_data["users"],
-                        metrics=None,  # lightweight — don't reconstruct Metrics
+                        metrics=metrics_obj,
                         decision=run_data["decision"],
                         reason=run_data["reason"],
                     )
@@ -246,6 +340,8 @@ def run_scenario(
             timeout=min(timeout, 300),
             slaves=slaves,
             discard=True,
+            safe_jmx_name=safe_jmx_name,
+            safe_scenario_name=safe_scenario_name,
         )
         logger.info(
             "Warmup complete — settling for %ds before escalation...",
@@ -256,11 +352,10 @@ def run_scenario(
     # ── Main load escalation loop ───────────────────────────────────────────
     consecutive_failures = 0
 
-    first_pending_idx = 0
-    for idx, step in enumerate(load_steps):
-        if step not in completed_users:
-            first_pending_idx = idx
-            break
+    # LOG-06: replaced the fragile first_pending_idx scan with a simple flag.
+    # Cooldown is applied only after the first step that actually executes in
+    # this session, regardless of which steps were skipped from a checkpoint.
+    first_real_step_done = False
 
     for i, users in enumerate(load_steps):
         # Skip steps already completed in a prior interrupted run.
@@ -269,14 +364,13 @@ def run_scenario(
             continue
 
         # ── Cooldown between steps (Gap #2) ────────────────────────────────
-        # Apply cooldown before every step except the very first one.
-        is_first_real_step = i == first_pending_idx
-        if not is_first_real_step:
+        if first_real_step_done:
             logger.info(
                 "Cooldown: waiting %ds for system recovery before next step...",
                 cooldown,
             )
             time.sleep(cooldown)
+        first_real_step_done = True
 
         # ── Per-step slave health check (Gap #4) ───────────────────────────
         active_slaves = slaves
@@ -315,6 +409,8 @@ def run_scenario(
             retry_count,
             timeout,
             slaves=active_slaves,
+            safe_jmx_name=safe_jmx_name,
+            safe_scenario_name=safe_scenario_name,
         )
 
         # ── Consecutive infra-failure tracking (Gap #1) ────────────────────
@@ -349,7 +445,20 @@ def run_scenario(
                 users,
                 run.reason,
             )
+            # LOG-07: record the WARN entry in the audit trail BEFORE the re-test
+            # so that both the warning signal and the re-test outcome are visible.
+            result.runs.append(run)
+            _save_checkpoint(result)
+            Reporter.clean_old_results(safe_jmx_name)
+
             time.sleep(max(30, cooldown // 2))  # short settle before re-test
+
+            # LOG-03: remove the WARN step's history entry from the engine before
+            # the re-test.  Without this, the same load level appears twice in the
+            # slope window and artificially flattens the adaptive trend.
+            if engine._history:
+                engine._history.pop()
+
             retest = _execute_step(
                 name,
                 jmx_path,
@@ -360,6 +469,8 @@ def run_scenario(
                 retry_count,
                 timeout,
                 slaves=active_slaves,
+                safe_jmx_name=safe_jmx_name,
+                safe_scenario_name=safe_scenario_name,
             )
             if retest.metrics is None:
                 consecutive_failures += 1
@@ -403,6 +514,10 @@ def run_scenario(
                 )
                 run = retest
 
+        # ── Append this step's final result ────────────────────────────────
+        # In the WARN path, the original WARN run was already appended above;
+        # here we append the re-test outcome (STOP or PROCEED).
+        # In all other paths (PROCEED / STOP / no-metrics) we append once here.
         result.runs.append(run)
 
         if run.metrics:
@@ -420,7 +535,8 @@ def run_scenario(
         _save_checkpoint(result)
 
         # ── Prune old result files (Gap #9) ────────────────────────────────
-        Reporter.clean_old_results(name)
+        # LOG-01: use safe_jmx_name so the glob matches the actual CSV filenames.
+        Reporter.clean_old_results(safe_jmx_name)
 
         # ── Breakpoint reached — stop escalation ────────────────────────────
         if run.decision == Decision.STOP:
@@ -456,20 +572,35 @@ def _execute_step(
     timeout: int,
     slaves: Optional[list[str]] = None,
     discard: bool = False,
+    safe_jmx_name: str = "",
+    safe_scenario_name: str = "",
 ) -> RunResult:
     """Run one load step: execute JMeter, optionally parse results, evaluate.
 
     Args:
-        discard: When True (warmup mode), skip parsing and evaluation and
-                 delete the result file immediately.  The engine's history
-                 is NOT updated so warmup traffic does not skew trend analysis.
+        discard:           When True (warmup mode), skip parsing and evaluation
+                           and delete the result file immediately.  The engine's
+                           history is NOT updated so warmup traffic does not skew
+                           trend analysis.
+        safe_jmx_name:     Pre-computed FS-safe JMX basename (derived by caller).
+        safe_scenario_name: Pre-computed FS-safe scenario name (derived by caller).
+
+    LOG-05: result_file includes both scenario name and JMX basename to prevent
+    two scenarios that share a JMX file from overwriting each other's results.
     """
-    # Use JMX basename + users for CSV naming (Gap #10)
-    jmx_basename = Path(jmx_path).stem
-    safe_name = "".join(c for c in jmx_basename if c.isalnum() or c in ("_", "-"))
-    if not safe_name:
-        safe_name = "unnamed"
-    result_file = f"results/{safe_name}_{users}.csv"
+    # Derive names as fallback only — callers should always supply them.
+    if not safe_jmx_name:
+        jmx_stem = Path(jmx_path).stem
+        safe_jmx_name = (
+            "".join(c for c in jmx_stem if c.isalnum() or c in ("_", "-")) or "unnamed"
+        )
+    if not safe_scenario_name:
+        safe_scenario_name = (
+            "".join(c for c in name if c.isalnum() or c in ("_", "-")) or "unnamed"
+        )
+
+    # LOG-05: scenario name prefix prevents cross-scenario result file collisions.
+    result_file = f"results/{safe_scenario_name}_{safe_jmx_name}_{users}.csv"
 
     runner.run(
         jmx_path,
@@ -608,9 +739,25 @@ def main() -> None:
     # Step 2: Resolve slave list (CLI flag overrides config key).
     slaves: Optional[list[str]] = None
     if args.slaves:
-        slaves = [s.strip() for s in args.slaves.split(",") if s.strip()]
+        raw_slaves = [s.strip() for s in args.slaves.split(",") if s.strip()]
+        # SEC-04: validate every slave address before attempting connectivity.
+        for addr in raw_slaves:
+            try:
+                _validate_slave_address(addr)
+            except ValueError as exc:
+                logger.error("Invalid slave address from --slaves: %s", exc)
+                sys.exit(1)
+        slaves = raw_slaves
     elif config.get("slaves"):
-        slaves = list(config["slaves"])
+        raw_slaves = list(config["slaves"])
+        # SEC-04: also validate addresses sourced from the config file.
+        for addr in raw_slaves:
+            try:
+                _validate_slave_address(addr)
+            except ValueError as exc:
+                logger.error("Invalid slave address in config: %s", exc)
+                sys.exit(1)
+        slaves = raw_slaves
 
     # Step 3: Resolve JMeter path.
     jmeter_path = args.jmeter_path or config.get("jmeter_path", "jmeter")
@@ -649,7 +796,7 @@ def main() -> None:
         for cfg in config["scenarios"]
     ]
 
-    # Step 5: Generate reports, compare baseline, notify.
+    # Step 6: Generate reports, compare baseline, notify.
     smtp_config = config.get("smtp")
     _write_reports(scenario_results, webhook_url=webhook, smtp_config=smtp_config)
     logger.info("Performance testing complete. Reports saved to reports/")

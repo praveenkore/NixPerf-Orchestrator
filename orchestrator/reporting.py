@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import smtplib
+import socket
 import ssl
 import urllib.request
 from datetime import datetime
@@ -94,7 +95,9 @@ class Reporter:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         body_rows = "".join(Reporter._render_scenario(s) for s in results)
 
-        html = f"""<!DOCTYPE html>
+        # SEC-07: renamed from 'html' to avoid shadowing the stdlib html module,
+        # which would silently break any html.escape() call added here in future.
+        html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -108,7 +111,7 @@ class Reporter:
 </body>
 </html>"""
 
-        path.write_text(html, encoding="utf-8")
+        path.write_text(html_content, encoding="utf-8")
         logger.info("HTML report → %s", output_path)
 
     # ------------------------------------------------------------------
@@ -117,14 +120,34 @@ class Reporter:
 
     @staticmethod
     def _validate_webhook_url(url: str) -> None:
+        """Validate that a webhook URL is safe to POST to.
+
+        SEC-02: The original implementation only rejected literal private/reserved
+        IP addresses.  A hostname that DNS-resolves to a private IP (DNS rebinding)
+        bypassed all checks.  This version resolves the hostname and validates
+        every returned address, closing the SSRF-via-DNS-rebinding vector.
+        """
         parsed = urlparse(url)
         if parsed.scheme != "https":
-            raise ValueError(f"Webhook URL must use HTTPS scheme, got: {parsed.scheme}")
+            raise ValueError(f"Webhook URL must use HTTPS scheme, got: {parsed.scheme!r}")
         hostname = parsed.hostname
         if not hostname:
             raise ValueError(f"Webhook URL has no hostname: {url}")
+
+        # Resolve the hostname and check every address that comes back.
         try:
-            addr = ipaddress.ip_address(hostname)
+            addr_infos = socket.getaddrinfo(hostname, None)
+        except socket.gaierror as exc:
+            raise ValueError(
+                f"Webhook hostname cannot be resolved: '{hostname}' — {exc}"
+            ) from exc
+
+        for info in addr_infos:
+            raw_ip = info[4][0]
+            try:
+                addr = ipaddress.ip_address(raw_ip)
+            except ValueError:
+                continue
             if (
                 addr.is_private
                 or addr.is_loopback
@@ -132,10 +155,9 @@ class Reporter:
                 or addr.is_reserved
                 or addr.is_multicast
             ):
-                raise ValueError(f"Webhook URL points to private/reserved IP: {addr}")
-        except ValueError as exc:
-            if "private" in str(exc) or "reserved" in str(exc):
-                raise
+                raise ValueError(
+                    f"Webhook URL '{url}' resolves to a private/reserved address: {addr}"
+                )
 
     @staticmethod
     def send_webhook_notification(
@@ -228,11 +250,14 @@ class Reporter:
         user = smtp_config.get("user")
         password = smtp_config.get("password")
         if password and isinstance(password, str) and password.startswith("env:"):
-            password = os.environ.get(password[4:], "")
+            # SEC-06: capture the var name BEFORE overwriting 'password' so the
+            # warning message logs the variable name, not the empty resolved value.
+            env_var_name = password[4:]
+            password = os.environ.get(env_var_name, "")
             if not password:
                 logger.warning(
                     "SMTP password environment variable '%s' not set — skipping email",
-                    password,
+                    env_var_name,
                 )
                 return
         sender = smtp_config.get("sender")
