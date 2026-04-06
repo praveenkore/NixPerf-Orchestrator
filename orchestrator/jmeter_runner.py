@@ -251,5 +251,10 @@ class JMeterRunner:
             f"-Jrampup={rampup}",
         ]
         if slaves:
-            command.extend(["-R", ",".join(slaves)])
+            # Distributed mode: also pass properties to slaves using -G
+            command.extend([
+                f"-Gusers={users}",
+                f"-Grampup={rampup}",
+                "-R", ",".join(slaves)
+            ])
         return command
