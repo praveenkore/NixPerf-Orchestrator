@@ -32,9 +32,10 @@ DEFAULT_RESERVOIR_SIZE: int = 100_000
 # Files with fewer rows are flagged as possibly truncated/incomplete.
 MIN_VALID_ROWS: int = 10
 
-# JMeter's default CSV format has 9+ comma-separated columns per row.
-# Fewer commas on the last row is a reliable indicator of truncation.
-MIN_EXPECTED_COLUMNS: int = 6
+# Minimal CSV format saves 5 columns (timeStamp, elapsed, label,
+# responseCode, success) = 4 commas per row.  Fewer than this on the
+# last row is a reliable indicator of truncation.
+MIN_EXPECTED_COLUMNS: int = 4
 
 
 class ResultsParser:
