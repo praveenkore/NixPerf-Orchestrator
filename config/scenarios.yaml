@@ -12,6 +12,7 @@ scenarios:
     # ── Execution settings ──────────────────────────────────────────────────
     retry_count: 1          # retry JMeter once on failure (2 total attempts)
     timeout_seconds: 7200   # hard kill JMeter process after 2 hours
+    steady_state_seconds: 120  # seconds of sustained load after ramp completes (duration = rampup + steady_state_seconds)
 
     # ── SLA thresholds ──────────────────────────────────────────────────────
     sla:

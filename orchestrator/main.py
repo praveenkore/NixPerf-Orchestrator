@@ -242,6 +242,7 @@ def run_scenario(
     timeout = scenario_cfg.get("timeout_seconds", 7200)
     mode = scenario_cfg.get("mode", "static")
     cooldown = scenario_cfg.get("cooldown_seconds", COOLDOWN_DEFAULT_SECONDS)
+    steady_state_seconds = scenario_cfg.get("steady_state_seconds", 120)
     warmup_users = scenario_cfg.get("warmup_users", WARMUP_USERS_DEFAULT)
     max_failures = scenario_cfg.get(
         "max_consecutive_failures", MAX_CONSECUTIVE_FAILURES_DEFAULT
@@ -329,6 +330,7 @@ def run_scenario(
             min(timeout, 300),
         )
         warmup_rampup = min(WARMUP_RAMPUP_DEFAULT, warmup_users * 3)
+        warmup_duration = warmup_rampup + 60  # short steady-state for warmup
         _execute_step(
             name,
             jmx_path,
@@ -338,6 +340,7 @@ def run_scenario(
             engine,
             retry_count=1,
             timeout=min(timeout, 300),
+            duration=warmup_duration,
             slaves=slaves,
             discard=True,
             safe_jmx_name=safe_jmx_name,
@@ -395,8 +398,10 @@ def run_scenario(
 
         # ── Execute the load step ───────────────────────────────────────────
         rampup = calculate_rampup(users, ramp_config)
+        duration = rampup + steady_state_seconds
         logger.info(
-            "Load step: scenario=%s | users=%d | rampup=%ds", name, users, rampup
+            "Load step: scenario=%s | users=%d | rampup=%ds | duration=%ds",
+            name, users, rampup, duration,
         )
 
         run = _execute_step(
@@ -408,6 +413,7 @@ def run_scenario(
             engine,
             retry_count,
             timeout,
+            duration=duration,
             slaves=active_slaves,
             safe_jmx_name=safe_jmx_name,
             safe_scenario_name=safe_scenario_name,
@@ -468,6 +474,7 @@ def run_scenario(
                 engine,
                 retry_count,
                 timeout,
+                duration=duration,
                 slaves=active_slaves,
                 safe_jmx_name=safe_jmx_name,
                 safe_scenario_name=safe_scenario_name,
@@ -570,6 +577,7 @@ def _execute_step(
     engine: DecisionEngine,
     retry_count: int,
     timeout: int,
+    duration: Optional[int] = None,
     slaves: Optional[list[str]] = None,
     discard: bool = False,
     safe_jmx_name: str = "",
@@ -607,6 +615,7 @@ def _execute_step(
         result_file,
         users,
         rampup=rampup,
+        duration=duration,
         slaves=slaves,
         timeout=timeout,
         retry_count=retry_count,

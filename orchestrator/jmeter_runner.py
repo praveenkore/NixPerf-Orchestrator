@@ -88,6 +88,7 @@ class JMeterRunner:
         result_path: str,
         users: int,
         rampup: int = 60,
+        duration: Optional[int] = None,
         slaves: Optional[list[str]] = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         retry_count: int = DEFAULT_RETRY_COUNT,
@@ -99,6 +100,8 @@ class JMeterRunner:
             result_path: Destination for the result CSV/JTL file.
             users:       Number of concurrent users to inject via ``-Jusers``.
             rampup:      Ramp-up period in seconds, injected via ``-Jrampup``.
+            duration:    Total test duration in seconds, injected via ``-Jduration``
+                         (and ``-Gduration`` on slaves). When None, the JMX default is used.
             slaves:      Optional list of slave IPs for distributed mode.
             timeout:     Max seconds to wait before killing the process.
             retry_count: Number of retry attempts on failure (total attempts = retry_count + 1).
@@ -107,7 +110,7 @@ class JMeterRunner:
             (success, output_text)
         """
         Path(result_path).parent.mkdir(parents=True, exist_ok=True)
-        command = self._build_command(jmx_path, result_path, users, rampup, slaves)
+        command = self._build_command(jmx_path, result_path, users, rampup, duration, slaves)
 
         output = ""
         for attempt in range(
@@ -238,6 +241,7 @@ class JMeterRunner:
         result_path: str,
         users: int,
         rampup: int,
+        duration: Optional[int],
         slaves: Optional[list[str]],
     ) -> list[str]:
         command = [
@@ -250,11 +254,25 @@ class JMeterRunner:
             f"-Jusers={users}",
             f"-Jrampup={rampup}",
         ]
+        if duration is not None:
+            command.append(f"-Jduration={duration}")
         if slaves:
-            # Distributed mode: also pass properties to slaves using -G
+            # Distributed mode: divide users evenly across slaves so the total
+            # concurrent load equals the requested user count, not a multiple of it.
+            # e.g. 500 users / 4 slaves = 125 users per slave.
+            users_per_slave = max(1, (users + len(slaves) - 1) // len(slaves))
+            logger.info(
+                "Distributed load: %d users / %d slaves = %d users per slave",
+                users, len(slaves), users_per_slave,
+            )
+            # Pass properties to slaves using -G so that ${__P(users)},
+            # ${__P(rampup)}, and ${__P(duration)} resolve correctly on each
+            # slave JVM — -J only sets them on the controller.
             command.extend([
-                f"-Gusers={users}",
+                f"-Gusers={users_per_slave}",
                 f"-Grampup={rampup}",
-                "-R", ",".join(slaves)
             ])
+            if duration is not None:
+                command.append(f"-Gduration={duration}")
+            command.extend(["-R", ",".join(slaves)])
         return command
