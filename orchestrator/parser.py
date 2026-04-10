@@ -9,6 +9,19 @@ Metrics computed:
     - total_requests, error_count, error_percent
     - avg_response_time, min_response_time, max_response_time
     - p95, p99  (via reservoir sampling — accurate approximation for large files)
+
+Error counting (PARSE-01):
+    JMeter has two independent notions of "failure":
+      1. HTTP-level errors  — response code is not in 2xx range (e.g. 4xx, 5xx).
+         This is what JMeter's console 'Err:' counter measures.
+      2. Assertion failures — a JMeter assertion (response-time, body-content, etc.)
+         failed, even if the HTTP code was 200.  These set success=false in the CSV
+         but are NOT counted in the console 'Err:' total.
+
+    The original code used `success` from the CSV, which includes assertion failures
+    and caused a large discrepancy between the orchestrator's reported error rate and
+    the JMeter console.  The fix counts HTTP-level errors (responseCode not in 1xx-3xx)
+    to match the JMeter console.  Both counts are logged at INFO level for visibility.
 """
 
 import csv
@@ -111,6 +124,21 @@ class ResultsParser:
                 logger.warning("No valid rows found in %s", self.file_path)
             return None
 
+        # PARSE-01: log both HTTP errors and assertion failures so mismatches are visible.
+        assertion_failures = aggregator.assertion_failure_count
+        http_errors = aggregator.error_count
+        if assertion_failures != http_errors:
+            logger.info(
+                "Error breakdown for %s — HTTP errors: %d (%.1f%%) | "
+                "Assertion failures (success=false): %d (%.1f%%) | "
+                "Using HTTP errors for SLA evaluation (matches JMeter console)",
+                self.file_path.name,
+                http_errors,
+                (http_errors / aggregator.total_count) * 100,
+                assertion_failures,
+                (assertion_failures / aggregator.total_count) * 100,
+            )
+
         logger.info(
             "Parsed %d rows from %s (reservoir: %d samples)",
             aggregator.total_count,
@@ -175,8 +203,12 @@ class ResultsParser:
             return True
 
     @staticmethod
-    def _parse_row(row: dict) -> Optional[tuple[int, bool]]:
-        """Extract (elapsed_ms, is_success) from a raw CSV row, or None if malformed.
+    def _parse_row(row: dict) -> Optional[tuple[int, bool, bool]]:
+        """Extract (elapsed_ms, is_http_error, is_assertion_failure) from a raw CSV row.
+
+        PARSE-01: Returns two independent error flags:
+          - is_http_error:        True when responseCode is 4xx/5xx (matches JMeter console).
+          - is_assertion_failure: True when success=false in the CSV (includes assertion fails).
 
         Handles common JMeter header casing variations (e.g. 'elapsed' vs 'Elapsed').
         """
@@ -186,10 +218,9 @@ class ResultsParser:
 
             elapsed_key = row_keys.get("elapsed")
             success_key = row_keys.get("success")
+            rc_key = row_keys.get("responsecode")
 
             if elapsed_key is None or success_key is None:
-                # Fallback: JMeter 'success' column is sometimes called 'successful'
-                # in properties, but the CSV column header is usually 'success'.
                 return None
 
             elapsed_val = row.get(elapsed_key)
@@ -199,8 +230,30 @@ class ResultsParser:
                 return None
 
             elapsed = int(elapsed_val)
-            is_success = str(success_val).strip().lower() == "true"
-            return elapsed, is_success
+
+            # is_assertion_failure: reflects success column (includes JMeter assertions)
+            is_assertion_failure = str(success_val).strip().lower() != "true"
+
+            # is_http_error: true only for explicit HTTP error codes (4xx, 5xx, etc.)
+            # This matches what JMeter's console 'Err:' counter shows.
+            is_http_error = False
+            if rc_key is not None:
+                rc_val = row.get(rc_key, "")
+                rc_str = str(rc_val).strip()
+                try:
+                    rc_int = int(rc_str)
+                    # Treat anything outside 1xx–3xx range as an error.
+                    # JMeter also uses non-numeric codes (e.g. "Non HTTP response code")
+                    # which are also treated as errors.
+                    is_http_error = rc_int >= 400
+                except ValueError:
+                    # Non-numeric response code (e.g. "Non HTTP response code") = error
+                    is_http_error = bool(rc_str) and not rc_str.isspace()
+            else:
+                # No responseCode column — fall back to success column
+                is_http_error = is_assertion_failure
+
+            return elapsed, is_http_error, is_assertion_failure
         except (ValueError, KeyError, AttributeError, TypeError):
             logger.debug("Skipping malformed row: %s", row)
             return None
@@ -211,28 +264,34 @@ class _RunningAggregator:
 
     Uses Vitter's reservoir sampling algorithm (Algorithm R) to maintain a
     fixed-size random sample of elapsed times for percentile estimation.
+
+    PARSE-01: Tracks HTTP errors (responseCode >= 400) separately from
+    assertion failures (success=false) to match JMeter console 'Err:' reporting.
     """
 
     def __init__(self, reservoir_size: int) -> None:
         self.reservoir_size = reservoir_size
         self.total_count: int = 0
-        self.error_count: int = 0
+        self.error_count: int = 0            # HTTP-level errors (4xx/5xx)
+        self.assertion_failure_count: int = 0  # success=false in CSV (incl. assertions)
         self._sum: float = 0.0
         self._min: int = 2**62
         self._max: int = 0
         self.reservoir: list[int] = []
 
-    def consume(self, batch: list[tuple[int, bool]]) -> None:
-        """Process one batch of (elapsed, is_success) tuples."""
-        for elapsed, is_success in batch:
+    def consume(self, batch: list[tuple[int, bool, bool]]) -> None:
+        """Process one batch of (elapsed, is_http_error, is_assertion_failure) tuples."""
+        for elapsed, is_http_error, is_assertion_failure in batch:
             self.total_count += 1
             self._sum += elapsed
             if elapsed < self._min:
                 self._min = elapsed
             if elapsed > self._max:
                 self._max = elapsed
-            if not is_success:
+            if is_http_error:
                 self.error_count += 1
+            if is_assertion_failure:
+                self.assertion_failure_count += 1
 
             # Reservoir sampling — Algorithm R
             if len(self.reservoir) < self.reservoir_size:
