@@ -52,6 +52,9 @@ _MAX_DIAGNOSTIC_LINES = 20
 # ... (rest of the props)
 _MINIMAL_CSV_SAVE_PROPS: list[str] = [
     "-Jjmeter.save.saveservice.output_format=csv",
+    "-Jjmeter.save.saveservice.print_field_names=true",
+    "-Jjmeter.save.saveservice.default_delimiter=,",
+    "-Jsummariser.interval=10",
     "-Jjmeter.save.saveservice.timestamp=true",
     "-Jjmeter.save.saveservice.time=true",
     "-Jjmeter.save.saveservice.label=true",
@@ -212,7 +215,12 @@ class JMeterRunner:
             def _drain_stdout() -> None:
                 """Read stdout line-by-line and forward to logger."""
                 try:
-                    for line in process.stdout:  # type: ignore[union-attr]
+                    # PERF-06: using readline() instead of iterating over the file
+                    # handle directly to avoid internal python block-buffering in pipes.
+                    while True:
+                        line = process.stdout.readline() # type: ignore[union-attr]
+                        if not line:
+                            break
                         stripped = line.rstrip()
                         if stripped:
                             stdout_lines.append(stripped)
@@ -220,7 +228,7 @@ class JMeterRunner:
                             logger.debug("[jmeter] %s", stripped)
                             if "summary" in stripped.lower():
                                 _parse_summary_line(stripped)
-                except ValueError:
+                except (ValueError, OSError):
                     pass
 
             def _drain_stderr() -> None:

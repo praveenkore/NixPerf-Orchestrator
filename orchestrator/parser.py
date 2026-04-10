@@ -97,7 +97,18 @@ class ResultsParser:
                 aggregator.consume(batch)
 
         if aggregator.total_count == 0:
-            logger.warning("No valid rows found in %s", self.file_path)
+            # DIAG-02: logic to surface why parsing failed (missing headers, etc.)
+            try:
+                with self.file_path.open(mode="r", encoding="utf-8") as f:
+                    first_line = f.readline().strip()
+                    logger.warning(
+                        "No valid rows found in %s. First line of file: '%s'. "
+                        "Expected header with 'elapsed' and 'success' columns.",
+                        self.file_path,
+                        first_line,
+                    )
+            except Exception: # noqa: BLE001
+                logger.warning("No valid rows found in %s", self.file_path)
             return None
 
         logger.info(
@@ -165,11 +176,24 @@ class ResultsParser:
 
     @staticmethod
     def _parse_row(row: dict) -> Optional[tuple[int, bool]]:
-        """Extract (elapsed_ms, is_success) from a raw CSV row, or None if malformed."""
+        """Extract (elapsed_ms, is_success) from a raw CSV row, or None if malformed.
+
+        Handles common JMeter header casing variations (e.g. 'elapsed' vs 'Elapsed').
+        """
         try:
-            # Handle cases where row columns might be missing or None (NoneType errors).
-            elapsed_val = row.get("elapsed")
-            success_val = row.get("success")
+            # Case-insensitive lookup for specific keys.
+            row_keys = {k.strip().lower(): k for k in row.keys() if k is not None}
+
+            elapsed_key = row_keys.get("elapsed")
+            success_key = row_keys.get("success")
+
+            if elapsed_key is None or success_key is None:
+                # Fallback: JMeter 'success' column is sometimes called 'successful'
+                # in properties, but the CSV column header is usually 'success'.
+                return None
+
+            elapsed_val = row.get(elapsed_key)
+            success_val = row.get(success_key)
 
             if elapsed_val is None or success_val is None:
                 return None
