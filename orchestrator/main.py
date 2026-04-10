@@ -610,7 +610,7 @@ def _execute_step(
     # LOG-05: scenario name prefix prevents cross-scenario result file collisions.
     result_file = f"results/{safe_scenario_name}_{safe_jmx_name}_{users}.csv"
 
-    runner.run(
+    success, runner_output = runner.run(
         jmx_path,
         result_file,
         users,
@@ -621,12 +621,19 @@ def _execute_step(
         retry_count=retry_count,
     )
 
-    # Warmup path — discard result and return a synthetic PROCEED.
+    # Warmup path — discard result and return PROCEED if successful.
     if discard:
         try:
             Path(result_file).unlink(missing_ok=True)
         except OSError:
             pass
+        if not success:
+            return RunResult(
+                users=users,
+                metrics=None,
+                decision=Decision.STOP,
+                reason=f"Warmup probe failed: {runner_output[:200]}",
+            )
         return RunResult(
             users=users,
             metrics=None,
@@ -638,6 +645,15 @@ def _execute_step(
     metrics: Optional[Metrics] = None
     if Path(result_file).exists():
         metrics = ResultsParser(result_file).parse()
+    elif not success:
+        # runner.run() already logged the failure, but we need to return
+        # a Decision.STOP so the orchestrator halts escalation.
+        return RunResult(
+            users=users,
+            metrics=None,
+            decision=Decision.STOP,
+            reason=f"JMeter failed to start or crash: {runner_output[:200]}",
+        )
     else:
         logger.warning("Result file not found after run: %s", result_file)
 

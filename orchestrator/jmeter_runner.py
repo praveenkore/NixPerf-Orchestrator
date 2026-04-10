@@ -45,14 +45,11 @@ DEFAULT_RETRY_COUNT = 1
 # but are not kept in the in-memory buffer.
 _MAX_CAPTURED_LINES = 500
 
+# How many lines of JMeter output to surface in the error log on failure.
+_MAX_DIAGNOSTIC_LINES = 20
+
 # Minimal JMeter save-service properties.
-# The parser only needs 'elapsed' and 'success'; we also keep 'timeStamp',
-# 'label', and 'responseCode' for diagnostics.  Disabling the remaining 17+
-# default columns (bytes, URL, latency, threadName, hostname, connect time …)
-# cuts CSV file size by ~75–80%.
-# Note: these are master-side properties — in distributed mode the master
-# writes the CSV from sample events it receives from slaves, so -G is not
-# needed for save-service settings.
+# ... (rest of the props)
 _MINIMAL_CSV_SAVE_PROPS: list[str] = [
     "-Jjmeter.save.saveservice.output_format=csv",
     "-Jjmeter.save.saveservice.timestamp=true",
@@ -141,6 +138,11 @@ class JMeterRunner:
         Returns:
             (success, output_text)
         """
+        if not Path(jmx_path).exists():
+            err_msg = f"JMX file not found: {jmx_path}"
+            logger.error(err_msg)
+            return False, err_msg
+
         Path(result_path).parent.mkdir(parents=True, exist_ok=True)
         command = self._build_command(jmx_path, result_path, users, rampup, duration, slaves)
 
@@ -196,6 +198,9 @@ class JMeterRunner:
         stdout_lines: collections.deque = collections.deque(maxlen=_MAX_CAPTURED_LINES)
         stderr_lines: collections.deque = collections.deque(maxlen=_MAX_CAPTURED_LINES)
 
+        # DIAG-01: keep a small buffer of very recent lines to show on error.
+        diagnostic_lines: collections.deque = collections.deque(maxlen=_MAX_DIAGNOSTIC_LINES)
+
         try:
             process = subprocess.Popen(
                 command,
@@ -211,6 +216,7 @@ class JMeterRunner:
                         stripped = line.rstrip()
                         if stripped:
                             stdout_lines.append(stripped)
+                            diagnostic_lines.append(f"[stdout] {stripped}")
                             logger.debug("[jmeter] %s", stripped)
                             if "summary" in stripped.lower():
                                 _parse_summary_line(stripped)
@@ -224,6 +230,7 @@ class JMeterRunner:
                         stripped = line.rstrip()
                         if stripped:
                             stderr_lines.append(stripped)
+                            diagnostic_lines.append(f"[stderr] {stripped}")
                             logger.debug("[jmeter-err] %s", stripped)
                 except ValueError:
                     pass
@@ -250,10 +257,11 @@ class JMeterRunner:
 
             if process.returncode != 0:
                 stderr_text = "\n".join(stderr_lines)
+                diag_text = "\n".join(diagnostic_lines)
                 logger.error(
-                    "JMeter failed (exit %d). stderr: %s",
+                    "JMeter failed (exit %d). Recent output:\n%s",
                     process.returncode,
-                    stderr_text[-500:] if stderr_text else "<empty>",
+                    diag_text if diag_text else "<empty stdout/stderr>",
                 )
                 return False, stderr_text or f"Exit code {process.returncode}"
 
