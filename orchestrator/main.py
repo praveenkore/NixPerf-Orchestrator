@@ -455,7 +455,8 @@ def run_scenario(
             # so that both the warning signal and the re-test outcome are visible.
             result.runs.append(run)
             _save_checkpoint(result)
-            Reporter.clean_old_results(safe_jmx_name)
+            # LOG-01: pass full prefix so glob matches the actual CSV filenames.
+            Reporter.clean_old_results(f"{safe_scenario_name}_{safe_jmx_name}")
 
             time.sleep(max(30, cooldown // 2))  # short settle before re-test
 
@@ -464,6 +465,12 @@ def run_scenario(
             # slope window and artificially flattens the adaptive trend.
             if engine._history:
                 engine._history.pop()
+
+            # BUG-03: reset consecutive_failures before the re-test — the original
+            # WARN run DID collect metrics, so it should not count toward the abort
+            # threshold.  Without this reset, a single no-metric re-test could
+            # incorrectly bring the counter to the abort limit.
+            consecutive_failures = 0
 
             retest = _execute_step(
                 name,
@@ -542,8 +549,8 @@ def run_scenario(
         _save_checkpoint(result)
 
         # ── Prune old result files (Gap #9) ────────────────────────────────
-        # LOG-01: use safe_jmx_name so the glob matches the actual CSV filenames.
-        Reporter.clean_old_results(safe_jmx_name)
+        # LOG-01: use full prefix (scenario + jmx name) to match actual CSV filenames.
+        Reporter.clean_old_results(f"{safe_scenario_name}_{safe_jmx_name}")
 
         # ── Breakpoint reached — stop escalation ────────────────────────────
         if run.decision == Decision.STOP:
@@ -609,6 +616,15 @@ def _execute_step(
 
     # LOG-05: scenario name prefix prevents cross-scenario result file collisions.
     result_file = f"results/{safe_scenario_name}_{safe_jmx_name}_{users}.csv"
+
+    # BUG-01: delete any pre-existing result file before launching JMeter.
+    # JMeter appends results to an existing -l file rather than overwriting it.
+    # Without this, a WARN re-test would merge its output with the prior run's data,
+    # doubling the sample count and producing incorrect metrics and error rates.
+    try:
+        Path(result_file).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Could not delete stale result file %s: %s", result_file, exc)
 
     success, runner_output = runner.run(
         jmx_path,
