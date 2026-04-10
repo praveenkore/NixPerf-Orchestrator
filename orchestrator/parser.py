@@ -167,10 +167,17 @@ class ResultsParser:
     def _parse_row(row: dict) -> Optional[tuple[int, bool]]:
         """Extract (elapsed_ms, is_success) from a raw CSV row, or None if malformed."""
         try:
-            elapsed = int(row["elapsed"])
-            is_success = row["success"].strip().lower() == "true"
+            # Handle cases where row columns might be missing or None (NoneType errors).
+            elapsed_val = row.get("elapsed")
+            success_val = row.get("success")
+
+            if elapsed_val is None or success_val is None:
+                return None
+
+            elapsed = int(elapsed_val)
+            is_success = str(success_val).strip().lower() == "true"
             return elapsed, is_success
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, AttributeError, TypeError):
             logger.debug("Skipping malformed row: %s", row)
             return None
 
