@@ -60,6 +60,7 @@ from orchestrator.jmeter_runner import JMeterRunner
 from orchestrator.models import Metrics, RunResult, ScenarioResult
 from orchestrator.parser import ResultsParser
 from orchestrator.preflight import (
+    DEFAULT_RMI_PORTS,
     PreflightError,
     check_slaves_alive,
     run_preflight_checks,
@@ -383,7 +384,7 @@ def run_scenario(
             try:
                 # Use default RMI ports for slave health checks.
                 active_slaves = check_slaves_alive(
-                    slaves, ports=preflight.DEFAULT_RMI_PORTS
+                    slaves, ports=DEFAULT_RMI_PORTS
                 )
                 logger.info(
                     "Slave health check: %d/%d alive ✓",
