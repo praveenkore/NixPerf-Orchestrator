@@ -380,7 +380,9 @@ sudo sysctl -p
 
 #### Fix RMI Ports (Mandatory for Stability)
 
-Edit `<JMETER_HOME>/bin/jmeter.properties` on **all** nodes:
+Starting from v1.1.1, the **NixPerf Orchestrator automatically enforces** these ports by injecting them into the JMeter command line. While manual property edits are still recommended for completeness, they are no longer strictly required if using the orchestrator.
+
+Edit `<JMETER_HOME>/bin/jmeter.properties` on **all** nodes (Optional but recommended):
 
 ```properties
 server.rmi.localport=50000
@@ -390,13 +392,13 @@ server_port=1099
 
 Open these ports on **all slave firewalls**:
 
-| Port | Purpose |
-| :--- | :--- |
-| `1099` | JMeter server port |
-| `50000` | Server RMI local port |
-| `50001` | Client RMI local port |
+| Port | Purpose | Enforced by Orchestrator? |
+| :--- | :--- | :--- |
+| `1099` | JMeter server port | Yes (`server_port`) |
+| `50000` | Server RMI local port | Yes (`server.rmi.localport`) |
+| `50001` | Client RMI local port | Yes (`client.rmi.localport`) |
 
-> **Why?** Without fixed RMI ports, JMeter uses random ephemeral ports that get blocked by firewalls, causing `java.rmi.ConnectException` failures under load.
+> **Why?** Without fixed RMI ports, JMeter uses random ephemeral ports that get blocked by firewalls, causing `java.rmi.ConnectException` failures under load. By enforcing these ports automatically, the orchestrator ensures stability without requiring manual configuration on every node.
 
 #### Start JMeter Server
 

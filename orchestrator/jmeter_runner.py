@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 7200  # 2 hours
 DEFAULT_RETRY_COUNT = 1
 
+# Stability: fixed RMI ports for distributed testing behind firewalls.
+# These match the settings recommended in HELP.md and checked in preflight.py.
+DEFAULT_RMI_SERVER_PORT = 1099
+DEFAULT_SERVER_RMI_LOCALPORT = 50000
+DEFAULT_CLIENT_RMI_LOCALPORT = 50001
+
 # PERF-02: cap the number of lines retained in memory per run.
 # Lines beyond this limit are still forwarded to the logger (debug level)
 # but are not kept in the in-memory buffer.
@@ -331,6 +337,9 @@ class JMeterRunner:
             result_path,
             f"-Jusers={users}",
             f"-Jrampup={rampup}",
+            # Stability: enforce fixed RMI ports
+            f"-Jserver.rmi.localport={DEFAULT_SERVER_RMI_LOCALPORT}",
+            f"-Jclient.rmi.localport={DEFAULT_CLIENT_RMI_LOCALPORT}",
         ]
         if duration is not None:
             command.append(f"-Jduration={duration}")
@@ -365,6 +374,8 @@ class JMeterRunner:
             command.extend([
                 f"-Gusers={users_per_slave}",
                 f"-Grampup={rampup}",
+                # Stability: slaves must also use the fixed RMI port
+                f"-Gserver.rmi.localport={DEFAULT_SERVER_RMI_LOCALPORT}",
             ])
             if duration is not None:
                 command.append(f"-Gduration={duration}")

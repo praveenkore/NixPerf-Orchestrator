@@ -18,11 +18,11 @@ import logging
 import shutil
 import socket
 from pathlib import Path
-from typing import Optional
+from orchestrator.jmeter_runner import DEFAULT_RMI_SERVER_PORT, DEFAULT_SERVER_RMI_LOCALPORT
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RMI_PORTS = [1099, 50000]
+DEFAULT_RMI_PORTS = [DEFAULT_RMI_SERVER_PORT, DEFAULT_SERVER_RMI_LOCALPORT]
 MIN_DISK_SPACE_MB = 500
 
 # Fraction of the original slave pool that must remain alive.
