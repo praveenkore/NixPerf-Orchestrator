@@ -220,7 +220,6 @@ def run_scenario(
     runner: JMeterRunner,
     slaves: Optional[list[str]] = None,
     resume: bool = True,
-    rmi_port: Optional[int] = None,
     result_fields: Optional[dict[str, bool]] = None,
 ) -> ScenarioResult:
     """Execute all load steps for a single scenario and return its result.
@@ -344,7 +343,6 @@ def run_scenario(
             timeout=min(timeout, 300),
             duration=warmup_duration,
             slaves=slaves,
-            rmi_port=rmi_port,
             result_fields=result_fields,
             discard=True,
             safe_jmx_name=safe_jmx_name,
@@ -383,13 +381,10 @@ def run_scenario(
         active_slaves = slaves
         if slaves:
             try:
-                # If rmi_port is provided, we check ONLY that port.
-                if rmi_port:
-                    probe_ports = [rmi_port]
-                else:
-                    probe_ports = list(preflight.DEFAULT_RMI_PORTS)
-
-                active_slaves = check_slaves_alive(slaves, ports=probe_ports)
+                # Use default RMI ports for slave health checks.
+                active_slaves = check_slaves_alive(
+                    slaves, ports=preflight.DEFAULT_RMI_PORTS
+                )
                 logger.info(
                     "Slave health check: %d/%d alive ✓",
                     len(active_slaves),
@@ -425,7 +420,6 @@ def run_scenario(
             timeout,
             duration=duration,
             slaves=active_slaves,
-            rmi_port=rmi_port,
             result_fields=result_fields,
             safe_jmx_name=safe_jmx_name,
             safe_scenario_name=safe_scenario_name,
@@ -495,7 +489,6 @@ def run_scenario(
                 timeout,
                 duration=duration,
                 slaves=active_slaves,
-                rmi_port=rmi_port,
                 result_fields=result_fields,
                 safe_jmx_name=safe_jmx_name,
                 safe_scenario_name=safe_scenario_name,
@@ -600,7 +593,6 @@ def _execute_step(
     timeout: int,
     duration: Optional[int] = None,
     slaves: Optional[list[str]] = None,
-    rmi_port: Optional[int] = None,
     result_fields: Optional[dict[str, bool]] = None,
     discard: bool = False,
     safe_jmx_name: str = "",
@@ -649,7 +641,6 @@ def _execute_step(
         rampup=rampup,
         duration=duration,
         slaves=slaves,
-        rmi_port=rmi_port,
         result_fields=result_fields,
         timeout=timeout,
         retry_count=retry_count,
@@ -781,12 +772,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to the JMeter executable (overrides config-level jmeter_path)",
     )
-    parser.add_argument(
-        "--rmi-port",
-        type=int,
-        default=None,
-        help="Custom JMeter RMI port (overrides config-level rmi_port)",
-    )
     return parser.parse_args()
 
 
@@ -837,8 +822,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Step 4: Resolve RMI port and result fields.
-    rmi_port = args.rmi_port or config.get("rmi_port")
+    # Step 4: Resolve result fields.
     result_fields = config.get("result_fields")
 
     # Step 5: Pre-flight checks.
@@ -848,7 +832,6 @@ def main() -> None:
                 config["scenarios"],
                 slaves=slaves,
                 jmeter_path=jmeter_path,
-                rmi_port=rmi_port,
             )
         except PreflightError as exc:
             logger.error("Pre-flight check failed: %s", exc)
@@ -869,7 +852,6 @@ def main() -> None:
             runner,
             slaves=slaves,
             resume=resume,
-            rmi_port=rmi_port,
             result_fields=result_fields,
         )
         for cfg in config["scenarios"]

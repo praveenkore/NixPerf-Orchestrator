@@ -142,7 +142,6 @@ class JMeterRunner:
         rampup: int = 60,
         duration: Optional[int] = None,
         slaves: Optional[list[str]] = None,
-        rmi_port: Optional[int] = None,
         result_fields: Optional[dict[str, bool]] = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         retry_count: int = DEFAULT_RETRY_COUNT,
@@ -176,7 +175,6 @@ class JMeterRunner:
             rampup,
             duration,
             slaves,
-            rmi_port,
             result_fields,
         )
 
@@ -322,7 +320,6 @@ class JMeterRunner:
         rampup: int,
         duration: Optional[int],
         slaves: Optional[list[str]],
-        rmi_port: Optional[int] = None,
         result_fields: Optional[dict[str, bool]] = None,
     ) -> list[str]:
         command = [
@@ -372,16 +369,5 @@ class JMeterRunner:
             if duration is not None:
                 command.append(f"-Gduration={duration}")
 
-            if rmi_port:
-                # Tell the controller which RMI port to use for remote communication.
-                # We also set server_port to the same value as it's a common pattern.
-                command.extend([
-                    f"-Dserver.rmi.port={rmi_port}",
-                    f"-Dserver_port={rmi_port}",
-                ])
-                # Explicitly add port to each slave address in the -R list.
-                slave_list = [f"{s}:{rmi_port}" if ":" not in s else s for s in slaves]
-                command.extend(["-R", ",".join(slave_list)])
-            else:
-                command.extend(["-R", ",".join(slaves)])
+            command.extend(["-R", ",".join(slaves)])
         return command

@@ -47,7 +47,6 @@ scenarios:
 #   - 192.168.1.10
 #   - 192.168.1.11
 
-# rmi_port: 4445              # Custom JMeter RMI port (default: 1099)
 
 # ── Optional: result fields to capture in CSV ───────────────────────────────
 # By default, a minimal set is captured for performance. Enable these to
