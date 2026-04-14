@@ -67,6 +67,16 @@ def validate_config(config: dict) -> None:
                     f"notification.webhook_url must use HTTPS, got: '{url}'"
                 )
 
+    if "result_fields" in config:
+        rf = config["result_fields"]
+        if not isinstance(rf, dict):
+            raise ConfigValidationError("Top-level 'result_fields' must be a dictionary")
+        for k, v in rf.items():
+            if not isinstance(v, bool):
+                raise ConfigValidationError(
+                    f"result_fields['{k}'] must be a boolean, got {type(v).__name__}"
+                )
+
     logger.info("Config validation passed ✓ (%d scenarios)", len(config["scenarios"]))
 
 

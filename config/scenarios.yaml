@@ -49,6 +49,17 @@ scenarios:
 
 # rmi_port: 4445              # Custom JMeter RMI port (default: 1099)
 
+# ── Optional: result fields to capture in CSV ───────────────────────────────
+# By default, a minimal set is captured for performance. Enable these to
+# capture more detail (e.g. latency, connect_time, thread_name).
+# result_fields:
+#   latency: true
+#   connect_time: true
+#   response_message: true
+#   thread_name: true
+#   url: false
+#   bytes: true
+
 
 # ── Optional: webhook notification on test completion ───────────────────────
 # Supports Slack Incoming Webhooks and any generic JSON POST endpoint.

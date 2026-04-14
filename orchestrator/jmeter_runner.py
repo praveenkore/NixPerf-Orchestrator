@@ -48,34 +48,54 @@ _MAX_CAPTURED_LINES = 500
 # How many lines of JMeter output to surface in the error log on failure.
 _MAX_DIAGNOSTIC_LINES = 20
 
-# Minimal JMeter save-service properties.
-# ... (rest of the props)
-_MINIMAL_CSV_SAVE_PROPS: list[str] = [
-    "-Jjmeter.save.saveservice.output_format=csv",
-    "-Jjmeter.save.saveservice.print_field_names=true",
-    "-Jjmeter.save.saveservice.default_delimiter=,",
-    "-Jsummariser.interval=10",
-    "-Jjmeter.save.saveservice.timestamp=true",
-    "-Jjmeter.save.saveservice.time=true",
-    "-Jjmeter.save.saveservice.label=true",
-    "-Jjmeter.save.saveservice.response_code=true",
-    "-Jjmeter.save.saveservice.successful=true",
-    "-Jjmeter.save.saveservice.response_message=false",
-    "-Jjmeter.save.saveservice.thread_name=false",
-    "-Jjmeter.save.saveservice.data_type=false",
-    "-Jjmeter.save.saveservice.encoding=false",
-    "-Jjmeter.save.saveservice.assertions=false",
-    "-Jjmeter.save.saveservice.bytes=false",
-    "-Jjmeter.save.saveservice.sent_bytes=false",
-    "-Jjmeter.save.saveservice.url=false",
-    "-Jjmeter.save.saveservice.filename=false",
-    "-Jjmeter.save.saveservice.hostname=false",
-    "-Jjmeter.save.saveservice.thread_counts=false",
-    "-Jjmeter.save.saveservice.sample_count=false",
-    "-Jjmeter.save.saveservice.idle_time=false",
-    "-Jjmeter.save.saveservice.connect_time=false",
-    "-Jjmeter.save.saveservice.latency=false",
-]
+# Mapping of configuration keys to JMeter saveservice properties.
+# These fields can be toggled via the 'result_fields' section in scenarios.yaml.
+_SAVESERVICE_MAP: dict[str, str] = {
+    "timestamp": "jmeter.save.saveservice.timestamp",
+    "time": "jmeter.save.saveservice.time",
+    "label": "jmeter.save.saveservice.label",
+    "response_code": "jmeter.save.saveservice.response_code",
+    "successful": "jmeter.save.saveservice.successful",
+    "response_message": "jmeter.save.saveservice.response_message",
+    "thread_name": "jmeter.save.saveservice.thread_name",
+    "data_type": "jmeter.save.saveservice.data_type",
+    "encoding": "jmeter.save.saveservice.encoding",
+    "assertions": "jmeter.save.saveservice.assertions",
+    "bytes": "jmeter.save.saveservice.bytes",
+    "sent_bytes": "jmeter.save.saveservice.sent_bytes",
+    "url": "jmeter.save.saveservice.url",
+    "filename": "jmeter.save.saveservice.filename",
+    "hostname": "jmeter.save.saveservice.hostname",
+    "thread_counts": "jmeter.save.saveservice.thread_counts",
+    "sample_count": "jmeter.save.saveservice.sample_count",
+    "idle_time": "jmeter.save.saveservice.idle_time",
+    "connect_time": "jmeter.save.saveservice.connect_time",
+    "latency": "jmeter.save.saveservice.latency",
+}
+
+# Default saveservice properties (minimal set for performance).
+_DEFAULT_SAVESERVICE: dict[str, bool] = {
+    "timestamp": True,
+    "time": True,
+    "label": True,
+    "response_code": True,
+    "successful": True,
+    "response_message": False,
+    "thread_name": False,
+    "data_type": False,
+    "encoding": False,
+    "assertions": False,
+    "bytes": False,
+    "sent_bytes": False,
+    "url": False,
+    "filename": False,
+    "hostname": False,
+    "thread_counts": False,
+    "sample_count": False,
+    "idle_time": False,
+    "connect_time": False,
+    "latency": False,
+}
 
 # Matches both JMeter "summary =" (cumulative) and "summary +" (interval) lines.
 # Example:
@@ -123,6 +143,7 @@ class JMeterRunner:
         duration: Optional[int] = None,
         slaves: Optional[list[str]] = None,
         rmi_port: Optional[int] = None,
+        result_fields: Optional[dict[str, bool]] = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         retry_count: int = DEFAULT_RETRY_COUNT,
     ) -> tuple[bool, str]:
@@ -149,7 +170,14 @@ class JMeterRunner:
 
         Path(result_path).parent.mkdir(parents=True, exist_ok=True)
         command = self._build_command(
-            jmx_path, result_path, users, rampup, duration, slaves, rmi_port
+            jmx_path,
+            result_path,
+            users,
+            rampup,
+            duration,
+            slaves,
+            rmi_port,
+            result_fields,
         )
 
         output = ""
@@ -295,6 +323,7 @@ class JMeterRunner:
         duration: Optional[int],
         slaves: Optional[list[str]],
         rmi_port: Optional[int] = None,
+        result_fields: Optional[dict[str, bool]] = None,
     ) -> list[str]:
         command = [
             self.jmeter_path,
@@ -308,7 +337,22 @@ class JMeterRunner:
         ]
         if duration is not None:
             command.append(f"-Jduration={duration}")
-        command.extend(_MINIMAL_CSV_SAVE_PROPS)
+
+        # Assemble saveservice properties based on configuration.
+        fields = dict(_DEFAULT_SAVESERVICE)
+        if result_fields:
+            fields.update(result_fields)
+
+        command.extend([
+            "-Jjmeter.save.saveservice.output_format=csv",
+            "-Jjmeter.save.saveservice.print_field_names=true",
+            "-Jjmeter.save.saveservice.default_delimiter=,",
+            "-Jsummariser.interval=10",
+        ])
+        for key, prop in _SAVESERVICE_MAP.items():
+            val = str(fields.get(key, _DEFAULT_SAVESERVICE[key])).lower()
+            command.append(f"-J{prop}={val}")
+
         if slaves:
             # Distributed mode: divide users evenly across slaves so the total
             # concurrent load equals the requested user count, not a multiple of it.

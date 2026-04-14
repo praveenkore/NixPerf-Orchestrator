@@ -221,6 +221,7 @@ def run_scenario(
     slaves: Optional[list[str]] = None,
     resume: bool = True,
     rmi_port: Optional[int] = None,
+    result_fields: Optional[dict[str, bool]] = None,
 ) -> ScenarioResult:
     """Execute all load steps for a single scenario and return its result.
 
@@ -344,6 +345,7 @@ def run_scenario(
             duration=warmup_duration,
             slaves=slaves,
             rmi_port=rmi_port,
+            result_fields=result_fields,
             discard=True,
             safe_jmx_name=safe_jmx_name,
             safe_scenario_name=safe_scenario_name,
@@ -423,6 +425,7 @@ def run_scenario(
             duration=duration,
             slaves=active_slaves,
             rmi_port=rmi_port,
+            result_fields=result_fields,
             safe_jmx_name=safe_jmx_name,
             safe_scenario_name=safe_scenario_name,
         )
@@ -492,6 +495,7 @@ def run_scenario(
                 duration=duration,
                 slaves=active_slaves,
                 rmi_port=rmi_port,
+                result_fields=result_fields,
                 safe_jmx_name=safe_jmx_name,
                 safe_scenario_name=safe_scenario_name,
             )
@@ -596,6 +600,7 @@ def _execute_step(
     duration: Optional[int] = None,
     slaves: Optional[list[str]] = None,
     rmi_port: Optional[int] = None,
+    result_fields: Optional[dict[str, bool]] = None,
     discard: bool = False,
     safe_jmx_name: str = "",
     safe_scenario_name: str = "",
@@ -644,6 +649,7 @@ def _execute_step(
         duration=duration,
         slaves=slaves,
         rmi_port=rmi_port,
+        result_fields=result_fields,
         timeout=timeout,
         retry_count=retry_count,
     )
@@ -830,11 +836,18 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Step 4: Pre-flight checks.
+    # Step 4: Resolve RMI port and result fields.
+    rmi_port = args.rmi_port or config.get("rmi_port")
+    result_fields = config.get("result_fields")
+
+    # Step 5: Pre-flight checks.
     if not args.skip_preflight:
         try:
             run_preflight_checks(
-                config["scenarios"], slaves=slaves, jmeter_path=jmeter_path
+                config["scenarios"],
+                slaves=slaves,
+                jmeter_path=jmeter_path,
+                rmi_port=rmi_port,
             )
         except PreflightError as exc:
             logger.error("Pre-flight check failed: %s", exc)
@@ -842,7 +855,7 @@ def main() -> None:
     else:
         logger.info("Pre-flight checks skipped (--skip-preflight)")
 
-    # Step 5: Run all scenarios.
+    # Step 6: Run all scenarios.
     runner = JMeterRunner(jmeter_path=jmeter_path)
     resume = not args.no_resume
     webhook = args.webhook_url or (config.get("notification", {}) or {}).get(
@@ -850,7 +863,14 @@ def main() -> None:
     )
 
     scenario_results: list[ScenarioResult] = [
-        run_scenario(cfg, runner, slaves=slaves, resume=resume)
+        run_scenario(
+            cfg,
+            runner,
+            slaves=slaves,
+            resume=resume,
+            rmi_port=rmi_port,
+            result_fields=result_fields,
+        )
         for cfg in config["scenarios"]
     ]
 
