@@ -383,10 +383,11 @@ def run_scenario(
         active_slaves = slaves
         if slaves:
             try:
-                # If rmi_port is provided, we check both 1099 and the custom port.
-                probe_ports = list(preflight.DEFAULT_RMI_PORTS)
-                if rmi_port and rmi_port not in probe_ports:
-                    probe_ports.append(rmi_port)
+                # If rmi_port is provided, we check ONLY that port.
+                if rmi_port:
+                    probe_ports = [rmi_port]
+                else:
+                    probe_ports = list(preflight.DEFAULT_RMI_PORTS)
 
                 active_slaves = check_slaves_alive(slaves, ports=probe_ports)
                 logger.info(
