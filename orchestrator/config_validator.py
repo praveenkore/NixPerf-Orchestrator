@@ -47,6 +47,13 @@ def validate_config(config: dict) -> None:
                 "Top-level 'slaves' must be a list of hostname/IP strings"
             )
 
+    if "rmi_port" in config:
+        port = config["rmi_port"]
+        if not isinstance(port, int) or not (1 <= port <= 65535):
+            raise ConfigValidationError(
+                f"Top-level 'rmi_port' must be an integer between 1 and 65535, got {port}"
+            )
+
     if "notification" in config:
         notif = config["notification"]
         if not isinstance(notif, dict):

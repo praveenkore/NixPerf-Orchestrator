@@ -47,6 +47,8 @@ scenarios:
 #   - 192.168.1.10
 #   - 192.168.1.11
 
+# rmi_port: 4445              # Custom JMeter RMI port (default: 1099)
+
 
 # ── Optional: webhook notification on test completion ───────────────────────
 # Supports Slack Incoming Webhooks and any generic JSON POST endpoint.

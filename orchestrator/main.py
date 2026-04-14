@@ -220,6 +220,7 @@ def run_scenario(
     runner: JMeterRunner,
     slaves: Optional[list[str]] = None,
     resume: bool = True,
+    rmi_port: Optional[int] = None,
 ) -> ScenarioResult:
     """Execute all load steps for a single scenario and return its result.
 
@@ -342,6 +343,7 @@ def run_scenario(
             timeout=min(timeout, 300),
             duration=warmup_duration,
             slaves=slaves,
+            rmi_port=rmi_port,
             discard=True,
             safe_jmx_name=safe_jmx_name,
             safe_scenario_name=safe_scenario_name,
@@ -379,7 +381,12 @@ def run_scenario(
         active_slaves = slaves
         if slaves:
             try:
-                active_slaves = check_slaves_alive(slaves)
+                # If rmi_port is provided, we check both 1099 and the custom port.
+                probe_ports = list(preflight.DEFAULT_RMI_PORTS)
+                if rmi_port and rmi_port not in probe_ports:
+                    probe_ports.append(rmi_port)
+
+                active_slaves = check_slaves_alive(slaves, ports=probe_ports)
                 logger.info(
                     "Slave health check: %d/%d alive ✓",
                     len(active_slaves),
@@ -415,6 +422,7 @@ def run_scenario(
             timeout,
             duration=duration,
             slaves=active_slaves,
+            rmi_port=rmi_port,
             safe_jmx_name=safe_jmx_name,
             safe_scenario_name=safe_scenario_name,
         )
@@ -483,6 +491,7 @@ def run_scenario(
                 timeout,
                 duration=duration,
                 slaves=active_slaves,
+                rmi_port=rmi_port,
                 safe_jmx_name=safe_jmx_name,
                 safe_scenario_name=safe_scenario_name,
             )
@@ -586,6 +595,7 @@ def _execute_step(
     timeout: int,
     duration: Optional[int] = None,
     slaves: Optional[list[str]] = None,
+    rmi_port: Optional[int] = None,
     discard: bool = False,
     safe_jmx_name: str = "",
     safe_scenario_name: str = "",
@@ -633,6 +643,7 @@ def _execute_step(
         rampup=rampup,
         duration=duration,
         slaves=slaves,
+        rmi_port=rmi_port,
         timeout=timeout,
         retry_count=retry_count,
     )
@@ -762,6 +773,12 @@ def parse_args() -> argparse.Namespace:
         "--jmeter-path",
         default=None,
         help="Path to the JMeter executable (overrides config-level jmeter_path)",
+    )
+    parser.add_argument(
+        "--rmi-port",
+        type=int,
+        default=None,
+        help="Custom JMeter RMI port (overrides config-level rmi_port)",
     )
     return parser.parse_args()
 

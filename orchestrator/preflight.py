@@ -38,6 +38,7 @@ def run_preflight_checks(
     scenarios: list[dict],
     slaves: Optional[list[str]] = None,
     jmeter_path: str = "jmeter",
+    rmi_port: Optional[int] = None,
 ) -> None:
     """Run all pre-flight checks. Raises PreflightError on first failure."""
     logger.info("Running pre-flight checks...")
@@ -50,8 +51,14 @@ def run_preflight_checks(
         _check_jmx_exists(scenario["jmx_path"])
 
     if slaves:
+        # If a custom RMI port is specified, we check both the default 1099
+        # and the custom one, along with the standard 50000 object port.
+        probe_ports = list(DEFAULT_RMI_PORTS)
+        if rmi_port and rmi_port not in probe_ports:
+            probe_ports.append(rmi_port)
+
         for slave in slaves:
-            _check_slave_connectivity(slave)
+            _check_slave_connectivity(slave, ports=probe_ports)
 
     logger.info("All pre-flight checks passed ✓")
 
