@@ -18,6 +18,7 @@ import logging
 import shutil
 import socket
 from pathlib import Path
+from typing import Optional
 from orchestrator.jmeter_runner import DEFAULT_RMI_SERVER_PORT, DEFAULT_SERVER_RMI_LOCALPORT
 
 logger = logging.getLogger(__name__)
