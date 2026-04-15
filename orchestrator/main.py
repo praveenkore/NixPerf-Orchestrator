@@ -405,9 +405,28 @@ def run_scenario(
         # ── Execute the load step ───────────────────────────────────────────
         rampup = calculate_rampup(users, ramp_config)
         duration = rampup + steady_state_seconds
+
+        # The runner timeout must always exceed the JMeter duration, otherwise
+        # the process is killed before the test finishes naturally.  Add a 5-
+        # minute buffer to allow for JMeter startup, teardown, and result
+        # flushing.  This is especially relevant at high user counts where the
+        # ramp alone can exceed the configured timeout_seconds.
+        _TIMEOUT_BUFFER = 300  # seconds
+        effective_timeout = max(timeout, duration + _TIMEOUT_BUFFER)
+        if effective_timeout > timeout:
+            logger.info(
+                "Runner timeout adjusted: %ds → %ds "
+                "(rampup=%ds + steady_state=%ds + buffer=%ds)",
+                timeout,
+                effective_timeout,
+                rampup,
+                steady_state_seconds,
+                _TIMEOUT_BUFFER,
+            )
+
         logger.info(
-            "Load step: scenario=%s | users=%d | rampup=%ds | duration=%ds",
-            name, users, rampup, duration,
+            "Load step: scenario=%s | users=%d | rampup=%ds | duration=%ds | timeout=%ds",
+            name, users, rampup, duration, effective_timeout,
         )
 
         run = _execute_step(
@@ -418,7 +437,7 @@ def run_scenario(
             runner,
             engine,
             retry_count,
-            timeout,
+            effective_timeout,
             duration=duration,
             slaves=active_slaves,
             result_fields=result_fields,
@@ -487,7 +506,7 @@ def run_scenario(
                 runner,
                 engine,
                 retry_count,
-                timeout,
+                effective_timeout,
                 duration=duration,
                 slaves=active_slaves,
                 result_fields=result_fields,

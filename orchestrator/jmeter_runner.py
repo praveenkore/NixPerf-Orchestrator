@@ -188,6 +188,17 @@ class JMeterRunner:
         for attempt in range(
             1, retry_count + 2
         ):  # +2: range exclusive + initial attempt
+            # Delete the result file before every attempt so that JMeter does
+            # not append this run's samples onto a leftover file from a prior
+            # attempt.  JMeter's -l flag always appends; without this, a retry
+            # would mix two separate runs into one CSV and corrupt the metrics.
+            try:
+                Path(result_path).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "Could not delete result file before attempt %d: %s", attempt, exc
+                )
+
             logger.info(
                 "Executing (attempt %d/%d): %s",
                 attempt,
