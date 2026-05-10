@@ -58,6 +58,11 @@ result_fields:
   thread_name: true
   url: true
   bytes: true
+  sent_bytes: true
+  thread_counts: true
+  hostname: true
+  assertions: true
+  idle_time: true
 
 
 # ── Optional: webhook notification on test completion ───────────────────────
