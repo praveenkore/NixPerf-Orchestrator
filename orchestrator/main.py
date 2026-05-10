@@ -249,6 +249,7 @@ def run_scenario(
     max_failures = scenario_cfg.get(
         "max_consecutive_failures", MAX_CONSECUTIVE_FAILURES_DEFAULT
     )
+    use_duration = scenario_cfg.get("use_duration", True)
 
     ramp_config: dict = scenario_cfg.get(
         "ramp_strategy",
@@ -342,7 +343,7 @@ def run_scenario(
             engine,
             retry_count=1,
             timeout=min(timeout, 300),
-            duration=warmup_duration,
+            duration=warmup_duration if use_duration else None,
             slaves=slaves,
             result_fields=result_fields,
             discard=True,
@@ -412,8 +413,8 @@ def run_scenario(
         # flushing.  This is especially relevant at high user counts where the
         # ramp alone can exceed the configured timeout_seconds.
         _TIMEOUT_BUFFER = 300  # seconds
-        effective_timeout = max(timeout, duration + _TIMEOUT_BUFFER)
-        if effective_timeout > timeout:
+        effective_timeout = max(timeout, (duration + _TIMEOUT_BUFFER) if use_duration else timeout)
+        if use_duration and effective_timeout > timeout:
             logger.info(
                 "Runner timeout adjusted: %ds → %ds "
                 "(rampup=%ds + steady_state=%ds + buffer=%ds)",
@@ -425,8 +426,12 @@ def run_scenario(
             )
 
         logger.info(
-            "Load step: scenario=%s | users=%d | rampup=%ds | duration=%ds | timeout=%ds",
-            name, users, rampup, duration, effective_timeout,
+            "Load step: scenario=%s | users=%d | rampup=%ds | duration=%s | timeout=%ds",
+            name,
+            users,
+            rampup,
+            str(duration) + "s" if use_duration else "N/A (iterations)",
+            effective_timeout,
         )
 
         run = _execute_step(
@@ -438,7 +443,7 @@ def run_scenario(
             engine,
             retry_count,
             effective_timeout,
-            duration=duration,
+            duration=duration if use_duration else None,
             slaves=active_slaves,
             result_fields=result_fields,
             safe_jmx_name=safe_jmx_name,

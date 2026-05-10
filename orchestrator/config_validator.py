@@ -189,6 +189,12 @@ def _validate_scenario(scenario: dict, idx: int) -> None:
                 f"{prefix}: mode must be one of {valid_modes}, got '{scenario['mode']}'"
             )
 
+    if "use_duration" in scenario:
+        if not isinstance(scenario["use_duration"], bool):
+            raise ConfigValidationError(
+                f"{prefix}: use_duration must be a boolean, got {type(scenario['use_duration']).__name__}"
+            )
+
 
 def _validate_ramp_strategy(ramp: dict, prefix: str) -> None:
     """Validate the ramp_strategy block."""
