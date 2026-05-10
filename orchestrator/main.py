@@ -700,7 +700,24 @@ def _execute_step(
             reason=f"JMeter failed to start or crash: {runner_output[:200]}",
         )
     else:
-        logger.warning("Result file not found after run: %s", result_file)
+        # JMeter reported success (exit 0) but wrote no result file.
+        # Most common causes:
+        #   1. JMX uses a hardcoded duration/scheduler instead of ${__P(duration,X)}
+        #      → JMeter runs for 0 or very few seconds and exits before writing CSV.
+        #   2. In distributed mode, slaves completed instantly (resource limits, bad JMX).
+        #   3. Wrong -l path (unlikely — path is derived from the JMX stem).
+        logger.warning(
+            "Result file not found after run: %s\n"
+            "  ► JMeter exited with code 0 but produced no CSV.\n"
+            "  ► Most likely cause: JMX file does not use ${__P(duration,X)} in the\n"
+            "    Thread Group scheduler, so JMeter ignores -Jduration and exits immediately.\n"
+            "  ► Fix: In JMeter GUI open '%s', set Thread Group → Duration (seconds) to\n"
+            "    ${__P(duration,300)} and enable the scheduler checkbox.\n"
+            "  ► JMeter last output:\n%s",
+            result_file,
+            jmx_path,
+            runner_output[-1000:] if runner_output else "<no output captured>",
+        )
 
     decision, reason = engine.evaluate(metrics)
     return RunResult(users=users, metrics=metrics, decision=decision, reason=reason)
